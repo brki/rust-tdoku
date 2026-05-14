@@ -504,11 +504,11 @@ fn test_all_solvers_agree() {
         let expected_count: usize =
             parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
-        let (basic_count, basic_sol, _) =
+        let (basic_count, _basic_sol, _) =
             solver_basic::solve(puzzle.as_bytes(), 100_000, 0);
-        let (scc_count, scc_sol, _) =
+        let (scc_count, _scc_sol, _) =
             solver_dpll_triad_scc::solve(puzzle.as_bytes(), 100_000, 3);
-        let (simd_count, simd_sol, _) =
+        let (simd_count, _simd_sol, _) =
             solver_dpll_triad_simd::solve(puzzle.as_bytes(), 100_000, 0);
 
         assert_eq!(
