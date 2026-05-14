@@ -799,6 +799,18 @@ impl SolverDpllTriadScc {
 
     /// Parse the input string and assert the given clues.
     fn initialize_puzzle(&mut self, input: &[u8], pencilmark: bool, state: &mut State) -> bool {
+        // Validate vanilla input: reject strings with invalid characters.
+        // '0' is an alternate empty-cell marker used by some puzzle formats.
+        if !pencilmark {
+            let len = input.len().min(81);
+            if input[..len]
+                .iter()
+                .any(|&b| !matches!(b, b'0'..=b'9' | b'.'))
+            {
+                return false;
+            }
+        }
+
         // For vanilla format, pad short inputs with '.' so we always have 81 bytes.
         let vanilla_buf;
         let vanilla_slice: &[u8] = if !pencilmark {
@@ -851,8 +863,8 @@ impl SolverDpllTriadScc {
         self.limit = limit;
         self.scc_inference = (config & 1) != 0;
         self.scc_heuristic = (config & 2) != 0;
-        // Pencilmark format: > 81 bytes and byte 81 is a '.' or digit.
-        let pencilmark = input.len() > 81 && input[81] >= b'.';
+        // Pencilmark format: exactly 729 bytes (81 cells × 9 candidates).
+        let pencilmark = input.len() >= 729;
         self.num_solutions = 0;
         self.num_guesses = 0;
 

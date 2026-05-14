@@ -123,6 +123,17 @@ impl SolverBasic {
         self.num_solutions = 0;
         self.cells_todo.clear();
 
+        // Validate input: reject strings with invalid characters (anything
+        // other than '1'–'9', '.', or '0').
+        // '0' is an alternate empty-cell marker used by some puzzle formats.
+        let len = input.len().min(81);
+        if input[..len]
+            .iter()
+            .any(|&b| !matches!(b, b'0'..=b'9' | b'.'))
+        {
+            return false;
+        }
+
         // Pad short inputs with '.' so we always have 81 bytes to work with.
         let mut buf = [b'.'; 81];
         let copy_len = input.len().min(81);

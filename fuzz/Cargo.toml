@@ -19,3 +19,9 @@ name = "solve_fuzz"
 path = "fuzz_targets/solve_fuzz.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "generator_fuzz"
+path = "fuzz_targets/generator_fuzz.rs"
+test = false
+doc = false

@@ -900,7 +900,26 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
         self.num_solutions = 0;
         self.num_guesses = 0;
 
-        let pencilmark = input.len() > 81 && input[81] >= b'.';
+        // Pencilmark format: exactly 729 bytes (81 cells × 9 candidates).
+        let pencilmark = input.len() >= 729;
+
+        // Validate input: reject strings with invalid characters (anything
+        // other than '1'–'9', '.', or '0' for vanilla; '1' or '.' for pencilmark).
+        // '0' is an alternate empty-cell marker used by some puzzle formats.
+        if !pencilmark {
+            let len = input.len().min(81);
+            if input[..len]
+                .iter()
+                .any(|&b| !matches!(b, b'0'..=b'9' | b'.'))
+            {
+                return 0;
+            }
+        } else if input[..input.len().min(729)]
+            .iter()
+            .any(|&b| !matches!(b, b'0'..=b'9' | b'.'))
+        {
+            return 0;
+        }
 
         let mut state = State::default();
         let ok = if pencilmark {
@@ -997,7 +1016,8 @@ pub fn enumerate(input: &[u8], limit: usize, mut callback: impl FnMut(&[u8; 81])
     if limit == 0 {
         return 0;
     }
-    let pencilmark = input.len() > 81 && input[81] >= b'.';
+    // Pencilmark format: exactly 729 bytes (81 cells × 9 candidates).
+    let pencilmark = input.len() >= 729;
     let mut state = State::default();
     let ok = if pencilmark {
         SolverDpllTriadSimd::<0>::init_pencilmark_by_box(input, &mut state)

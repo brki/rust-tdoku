@@ -2,12 +2,12 @@
 
 use libfuzzer_sys::fuzz_target;
 
-/// Fuzz target: feeds arbitrary byte sequences into all three solvers and
-/// the public API, verifying:
-/// - No panics, no unsound behavior
-/// - Solutions returned are valid Sudoku grids
-/// - Solutions satisfy the original clues (if any)
-/// - All three solvers agree on solution count
+// Fuzz target: feeds arbitrary byte sequences into all three solvers and
+// the public API, verifying:
+// - No panics, no unsound behavior
+// - Solutions returned are valid Sudoku grids
+// - Solutions satisfy the original clues (if any)
+// - All three solvers agree on solution count
 fuzz_target!(|data: &[u8]| {
     // Interpret fuzz input as ASCII; strip non-ASCII.
     let input: String = data
@@ -20,8 +20,8 @@ fuzz_target!(|data: &[u8]| {
 
     // ── safety: all solvers must not panic ──────────────────────────────────
     let (count_simd, sol_simd, _) = rdoku::solve_sudoku(&input, 2, 0);
-    let (count_basic, sol_basic, _) = rdoku::solver_basic::solve(input.as_bytes(), 2, 0);
-    let (count_scc, sol_scc, _) = rdoku::solver_dpll_triad_scc::solve(input.as_bytes(), 2, 0);
+    let (count_basic, _sol_basic, _) = rdoku::solver_basic::solve(input.as_bytes(), 2, 0);
+    let (count_scc, _sol_scc, _) = rdoku::solver_dpll_triad_scc::solve(input.as_bytes(), 2, 0);
 
     // ── agreement: all solvers must agree on count ──────────────────────────
     assert_eq!(
