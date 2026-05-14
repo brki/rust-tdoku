@@ -27,6 +27,7 @@ struct Options {
     pencilmark: bool,
     pretty: bool,
     json: bool,
+    solution: bool,
 }
 
 impl Default for Options {
@@ -44,6 +45,7 @@ impl Default for Options {
             pencilmark: true,
             pretty: false,
             json: false,
+            solution: false,
         }
     }
 }
@@ -219,7 +221,14 @@ impl Generator {
             .unwrap_or(f64::NEG_INFINITY)
     }
 
-    fn print_puzzle(&self, puzzle: &str, num_clues: usize, geo_mean_guesses: f64, loss: f64) {
+    fn print_puzzle(
+        &self,
+        puzzle: &str,
+        num_clues: usize,
+        geo_mean_guesses: f64,
+        loss: f64,
+        solution: Option<&str>,
+    ) {
         if self.options.json {
             let obj = format_puzzle_json(
                 puzzle,
@@ -231,16 +240,23 @@ impl Generator {
                 } else {
                     None
                 },
+                solution,
             );
             println!("{}", serde_json::to_string(&obj).unwrap());
         } else {
             if self.options.pretty {
                 print!("{}", format_pretty(puzzle, self.options.pencilmark));
             }
-            println!(
-                "{} {} {:.1} {:.2}",
-                puzzle, num_clues, geo_mean_guesses, loss
-            );
+            match solution {
+                Some(sol) => println!(
+                    "{} {} {:.1} {:.2} {}",
+                    puzzle, num_clues, geo_mean_guesses, loss, sol
+                ),
+                None => println!(
+                    "{} {} {:.1} {:.2}",
+                    puzzle, num_clues, geo_mean_guesses, loss
+                ),
+            }
         }
     }
 
@@ -308,8 +324,22 @@ impl Generator {
                 }
             }
 
+            // Resolve the solution if requested (puzzle is already unique at this point).
+            let solution: Option<String> = if self.options.solution {
+                let (_, sol, _) = rdoku::solve_sudoku(&puzzle_str, 1, 0);
+                Some(sol)
+            } else {
+                None
+            };
+
             if self.options.display_all {
-                self.print_puzzle(&puzzle_str, num_clues, geo_mean_guesses, loss);
+                self.print_puzzle(
+                    &puzzle_str,
+                    num_clues,
+                    geo_mean_guesses,
+                    loss,
+                    solution.as_deref(),
+                );
             }
 
             // skip if the puzzle's loss is worse than the current worst in the pool
@@ -318,7 +348,13 @@ impl Generator {
             }
 
             if !self.options.display_all {
-                self.print_puzzle(&puzzle_str, num_clues, geo_mean_guesses, loss);
+                self.print_puzzle(
+                    &puzzle_str,
+                    num_clues,
+                    geo_mean_guesses,
+                    loss,
+                    solution.as_deref(),
+                );
             }
 
             // add the new puzzle and evict the worst entry
@@ -339,13 +375,14 @@ impl Generator {
 
 /// Build a JSON object representing one puzzle output line.
 ///
-/// Fields are always present; `pretty` is `None` to omit it.
+/// Fields are always present; `pretty` and `solution` are `None` to omit them.
 fn format_puzzle_json(
     puzzle: &str,
     num_clues: usize,
     geo_mean_guesses: f64,
     loss: f64,
     pretty: Option<String>,
+    solution: Option<&str>,
 ) -> serde_json::Value {
     let mut obj = serde_json::json!({
         "puzzle": puzzle,
@@ -355,6 +392,9 @@ fn format_puzzle_json(
     });
     if let Some(formatted) = pretty {
         obj["pretty"] = serde_json::Value::String(formatted);
+    }
+    if let Some(sol) = solution {
+        obj["solution"] = serde_json::Value::String(sol.to_string());
     }
     obj
 }
@@ -450,8 +490,10 @@ fn print_usage() {
     eprintln!("                        Use -p 0 for vanilla output (default is pencilmark).");
     eprintln!();
     eprintln!("OUTPUT FORMAT (one line per puzzle printed):");
-    eprintln!("  <puzzle>  <num_clues>  <geo_mean_guesses>  <loss>");
+    eprintln!("  <puzzle>  <num_clues>  <geo_mean_guesses>  <loss>  [<solution>]");
     eprintln!();
+    eprintln!("  solution          The unique solved grid (81 chars, row by row).");
+    eprintln!("                    Present only when --solution / -s is given.");
     eprintln!("  geo_mean_guesses  Average guesses needed by the solver across -e random");
     eprintln!("                   permutations. Higher means harder for algorithmic solvers.");
     eprintln!("  loss              Score used for pool selection (lower = better/preferred):");
@@ -510,6 +552,10 @@ fn print_usage() {
     eprintln!("                      Default: 1 (pencilmark)");
     eprintln!("      --pretty        Print each puzzle as a human-readable ASCII art grid");
     eprintln!("                      before its one-line output.");
+    eprintln!("  -s, --solution      Include the unique solution (81-char solved grid) in");
+    eprintln!("                      the output. In plain text mode the solution is appended");
+    eprintln!("                      as a 5th column. In JSON mode it appears as a");
+    eprintln!("                      \"solution\" field.");
     eprintln!("  -h                  Display this help message.");
     eprintln!("  -j, --json          Output each puzzle as a JSON object");
     eprintln!("                      (one per line) instead of plain text.");
@@ -559,6 +605,9 @@ fn main() {
         } else if arg == "--json" || arg == "-j" {
             options.json = true;
             i += 1;
+        } else if arg == "--solution" || arg == "-s" {
+            options.solution = true;
+            i += 1;
         } else if arg == "-h" || arg == "--help" {
             print_usage();
             std::process::exit(0);
@@ -567,7 +616,7 @@ fn main() {
             i += 1;
             match ch {
                 // flags with required numeric arguments
-                'c' | 'g' | 'r' | 'd' | 'e' | 'l' | 'n' | 's' => {
+                'c' | 'g' | 'r' | 'd' | 'e' | 'l' | 'n' => {
                     let val = args.get(i).cloned().unwrap_or_default();
                     i += 1;
                     match ch {
@@ -606,7 +655,6 @@ fn main() {
                                 options.num_puzzles_in_pool = v;
                             }
                         }
-                        's' => { /* only tdoku solver available; ignore */ }
                         _ => unreachable!(),
                     }
                 }
@@ -667,6 +715,7 @@ mod tests {
             1.0,
             24.27,
             None,
+            None,
         );
 
         assert!(obj.is_object());
@@ -675,8 +724,9 @@ mod tests {
         assert!(map.contains_key("num_clues"));
         assert!(map.contains_key("geo_mean_guesses"));
         assert!(map.contains_key("loss"));
-        // "pretty" should be absent when not requested
+        // "pretty" and "solution" should be absent when not requested
         assert!(!map.contains_key("pretty"));
+        assert!(!map.contains_key("solution"));
     }
 
     #[test]
@@ -687,14 +737,33 @@ mod tests {
             1.0,
             24.27,
             Some("+-------+...".to_string()),
+            None,
         );
 
         assert!(obj["pretty"].is_string());
     }
 
     #[test]
+    fn json_includes_solution_when_provided() {
+        let obj = format_puzzle_json(
+            ".2.....89.5.7........1.34....4.6.....3.8...1...7...365..1.4.9.....9...3.9.2..1...",
+            25,
+            1.0,
+            24.27,
+            None,
+            Some("652483917978162435314975628825736149791824563436519872269348751547291386183657294"),
+        );
+
+        assert!(obj["solution"].is_string());
+        assert_eq!(
+            obj["solution"].as_str().unwrap(),
+            "652483917978162435314975628825736149791824563436519872269348751547291386183657294"
+        );
+    }
+
+    #[test]
     fn json_field_types_are_correct() {
-        let obj = format_puzzle_json("123456789", 9, 2.5, 10.123, None);
+        let obj = format_puzzle_json("123456789", 9, 2.5, 10.123, None, None);
 
         assert!(obj["puzzle"].is_string());
         assert!(obj["num_clues"].is_number());
@@ -705,7 +774,7 @@ mod tests {
     #[test]
     fn json_values_are_preserved() {
         let puzzle = ".23......5...";
-        let obj = format_puzzle_json(puzzle, 5, 3.14159, 12.3456, None);
+        let obj = format_puzzle_json(puzzle, 5, 3.14159, 12.3456, None, None);
 
         assert_eq!(obj["puzzle"].as_str().unwrap(), puzzle);
         assert_eq!(obj["num_clues"].as_u64().unwrap(), 5);
@@ -713,27 +782,43 @@ mod tests {
 
     #[test]
     fn json_rounds_geo_mean_guesses_to_1_decimal() {
-        let obj = format_puzzle_json("...", 0, 3.14159, 0.0, None);
+        let obj = format_puzzle_json("...", 0, 3.14159, 0.0, None, None);
         // 3.14159 * 10 = 31.4159, round = 31, /10 = 3.1
         assert_eq!(obj["geo_mean_guesses"].as_f64().unwrap(), 3.1);
     }
 
     #[test]
     fn json_rounds_loss_to_2_decimals() {
-        let obj = format_puzzle_json("...", 0, 0.0, 12.3456, None);
+        let obj = format_puzzle_json("...", 0, 0.0, 12.3456, None, None);
         // 12.3456 * 100 = 1234.56, round = 1235, /100 = 12.35
         assert_eq!(obj["loss"].as_f64().unwrap(), 12.35);
     }
 
     #[test]
     fn json_output_is_valid_json_line() {
-        let obj = format_puzzle_json(".2.....89.", 25, 1.0, 24.27, None);
+        let obj = format_puzzle_json(".2.....89.", 25, 1.0, 24.27, None, None);
         let json_str = serde_json::to_string(&obj).unwrap();
 
         // Should parse back successfully
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(parsed["puzzle"], obj["puzzle"]);
         assert_eq!(parsed["num_clues"], obj["num_clues"]);
+    }
+
+    #[test]
+    fn json_with_solution_output_is_valid() {
+        let solution = "652483917978162435314975628825736149791824563436519872269348751547291386183657294";
+        let obj = format_puzzle_json(".2.....89.", 25, 1.0, 24.27, None, Some(solution));
+        let json_str = serde_json::to_string(&obj).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["puzzle"], obj["puzzle"]);
+        assert_eq!(parsed["solution"], obj["solution"]);
+        assert_eq!(parsed["solution"].as_str().unwrap(), solution);
+        // Solution should be 81 chars, all digits 1-9
+        let sol_str = parsed["solution"].as_str().unwrap();
+        assert_eq!(sol_str.len(), 81);
+        assert!(sol_str.chars().all(|c| c.is_ascii_digit()));
     }
 
     // ------------------------------------------------------------------
