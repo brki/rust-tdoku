@@ -80,7 +80,11 @@ impl Util {
                         let src = puzzle[row * 81 + col * 9 + digit];
                         let eliminated = src == b'.';
                         out[row_perm[row] * 81 + col_perm[col] * 9 + digit_perm[digit]] =
-                            if eliminated { b'.' } else { b'1' + digit_perm[digit] as u8 };
+                            if eliminated {
+                                b'.'
+                            } else {
+                                b'1' + digit_perm[digit] as u8
+                            };
                     }
                 } else {
                     let ch = puzzle[row * 9 + col];
@@ -131,12 +135,14 @@ mod tests {
         util.block_shuffle(&mut vec);
         // Each band's rows must come from the same original band.
         for band in 0..3 {
-            let mut band_src: Vec<usize> = vec[band * 3..band * 3 + 3]
-                .iter()
-                .map(|&v| v / 3)
-                .collect();
+            let mut band_src: Vec<usize> =
+                vec[band * 3..band * 3 + 3].iter().map(|&v| v / 3).collect();
             band_src.dedup();
-            assert_eq!(band_src.len(), 1, "rows in band {band} mixed across source bands");
+            assert_eq!(
+                band_src.len(),
+                1,
+                "rows in band {band} mixed across source bands"
+            );
         }
         // All 9 indices must be distinct.
         let mut sorted = vec;

@@ -7,8 +7,8 @@
 
 use std::sync::OnceLock;
 
-use crate::simd_vectors::{Bitvec08x16, Bitvec16x16, which_dots_16, which_dots_64};
-use crate::bitutil::{low_order_bit_index, low_order_bit_index64, clear_low_bit, clear_low_bit64};
+use crate::bitutil::{clear_low_bit, clear_low_bit64, low_order_bit_index, low_order_bit_index64};
+use crate::simd_vectors::{which_dots_16, which_dots_64, Bitvec08x16, Bitvec16x16};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Debug trace (enabled via --features debug-trace)
@@ -81,7 +81,9 @@ struct Box {
 
 impl Default for Box {
     fn default() -> Self {
-        Self { cells: Bitvec16x16::all(K_ALL) }
+        Self {
+            cells: Bitvec16x16::all(K_ALL),
+        }
     }
 }
 
@@ -100,19 +102,10 @@ impl Default for Band {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct State {
     bands: [[Band; 3]; 2],
     boxen: [Box; 9],
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            bands: [[Band::default(); 3]; 2],
-            boxen: [Box::default(); 9],
-        }
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -133,7 +126,14 @@ impl BoxIndexing {
         let elem_i = ((cell / 9) % 3) as u8;
         let elem_j = (cell % 3) as u8;
         let elem = elem_i * 4 + elem_j;
-        Self { box_i, box_j, r#box, elem_i, elem_j, elem }
+        Self {
+            box_i,
+            box_j,
+            r#box,
+            elem_i,
+            elem_j,
+            elem,
+        }
     }
 }
 
@@ -155,6 +155,7 @@ struct Tables {
     cell3x3_mask: Bitvec16x16,
     row_rotate_3x3_1: Bitvec16x16,
     row_rotate_3x3_2: Bitvec16x16,
+    #[allow(dead_code)]
     one_value_mask: [Bitvec08x16; 9],
     box_peers: [[[usize; 3]; 3]; 2],
     div3: [usize; 9],
@@ -187,82 +188,85 @@ impl Tables {
                 ],
             ],
             triads_shift0_to_config_elims: [
-                Bitvec08x16::new(SHUF04, SHUF05, SHUF06, SHUF06, SHUF04, SHUF05, 0xffff, 0xffff),
-                Bitvec08x16::new(SHUF05, SHUF06, SHUF04, SHUF05, SHUF06, SHUF04, 0xffff, 0xffff),
-                Bitvec08x16::new(SHUF06, SHUF04, SHUF05, SHUF04, SHUF05, SHUF06, 0xffff, 0xffff),
+                Bitvec08x16::new(
+                    SHUF04, SHUF05, SHUF06, SHUF06, SHUF04, SHUF05, 0xffff, 0xffff,
+                ),
+                Bitvec08x16::new(
+                    SHUF05, SHUF06, SHUF04, SHUF05, SHUF06, SHUF04, 0xffff, 0xffff,
+                ),
+                Bitvec08x16::new(
+                    SHUF06, SHUF04, SHUF05, SHUF04, SHUF05, SHUF06, 0xffff, 0xffff,
+                ),
             ],
             triads_shift1_to_config_elims: [
-                Bitvec08x16::new(SHUF05, SHUF06, SHUF04, SHUF04, SHUF05, SHUF06, 0xffff, 0xffff),
-                Bitvec08x16::new(SHUF06, SHUF04, SHUF05, SHUF06, SHUF04, SHUF05, 0xffff, 0xffff),
-                Bitvec08x16::new(SHUF04, SHUF05, SHUF06, SHUF05, SHUF06, SHUF04, 0xffff, 0xffff),
+                Bitvec08x16::new(
+                    SHUF05, SHUF06, SHUF04, SHUF04, SHUF05, SHUF06, 0xffff, 0xffff,
+                ),
+                Bitvec08x16::new(
+                    SHUF06, SHUF04, SHUF05, SHUF06, SHUF04, SHUF05, 0xffff, 0xffff,
+                ),
+                Bitvec08x16::new(
+                    SHUF04, SHUF05, SHUF06, SHUF05, SHUF06, SHUF04, 0xffff, 0xffff,
+                ),
             ],
             triads_shift2_to_config_elims: [
-                Bitvec08x16::new(SHUF06, SHUF04, SHUF05, SHUF05, SHUF06, SHUF04, 0xffff, 0xffff),
-                Bitvec08x16::new(SHUF04, SHUF05, SHUF06, SHUF04, SHUF05, SHUF06, 0xffff, 0xffff),
-                Bitvec08x16::new(SHUF05, SHUF06, SHUF04, SHUF06, SHUF04, SHUF05, 0xffff, 0xffff),
+                Bitvec08x16::new(
+                    SHUF06, SHUF04, SHUF05, SHUF05, SHUF06, SHUF04, 0xffff, 0xffff,
+                ),
+                Bitvec08x16::new(
+                    SHUF04, SHUF05, SHUF06, SHUF04, SHUF05, SHUF06, 0xffff, 0xffff,
+                ),
+                Bitvec08x16::new(
+                    SHUF05, SHUF06, SHUF04, SHUF06, SHUF04, SHUF05, 0xffff, 0xffff,
+                ),
             ],
             triads_shift0_to_config_elims16: [Bitvec16x16::default(); 9],
             triads_shift1_to_config_elims16: [Bitvec16x16::default(); 9],
             triads_shift2_to_config_elims16: [Bitvec16x16::default(); 9],
             shuffle_configs_to_triads: [
                 Bitvec16x16::new(
-                    SHUF00, SHUF01, SHUF02, 0xffff,
-                    SHUF02, SHUF00, SHUF01, 0xffff,
-                    SHUF01, SHUF02, SHUF00, 0xffff,
-                    0xffff, 0xffff, 0xffff, 0xffff,
+                    SHUF00, SHUF01, SHUF02, 0xffff, SHUF02, SHUF00, SHUF01, 0xffff, SHUF01, SHUF02,
+                    SHUF00, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
                 ),
                 Bitvec16x16::new(
-                    SHUF04, SHUF05, SHUF03, 0xffff,
-                    SHUF05, SHUF03, SHUF04, 0xffff,
-                    SHUF03, SHUF04, SHUF05, 0xffff,
-                    0xffff, 0xffff, 0xffff, 0xffff,
+                    SHUF04, SHUF05, SHUF03, 0xffff, SHUF05, SHUF03, SHUF04, 0xffff, SHUF03, SHUF04,
+                    SHUF05, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
                 ),
             ],
             pos_triads_to_candidates: [
                 // horizontal
                 [
                     Bitvec16x16::new(
-                        SHUF00, SHUF00, SHUF00, SHUF01,
-                        SHUF01, SHUF01, SHUF01, SHUF02,
-                        SHUF02, SHUF02, SHUF02, SHUF00,
-                        SHUF03, SHUF03, SHUF03, SHUF03,
+                        SHUF00, SHUF00, SHUF00, SHUF01, SHUF01, SHUF01, SHUF01, SHUF02, SHUF02,
+                        SHUF02, SHUF02, SHUF00, SHUF03, SHUF03, SHUF03, SHUF03,
                     ),
                     Bitvec16x16::new(
-                        SHUF00, SHUF00, SHUF00, SHUF02,
-                        SHUF01, SHUF01, SHUF01, SHUF00,
-                        SHUF02, SHUF02, SHUF02, SHUF01,
-                        SHUF03, SHUF03, SHUF03, SHUF03,
+                        SHUF00, SHUF00, SHUF00, SHUF02, SHUF01, SHUF01, SHUF01, SHUF00, SHUF02,
+                        SHUF02, SHUF02, SHUF01, SHUF03, SHUF03, SHUF03, SHUF03,
                     ),
                 ],
                 // vertical
                 [
                     Bitvec16x16::new(
-                        SHUF00, SHUF01, SHUF02, SHUF03,
-                        SHUF00, SHUF01, SHUF02, SHUF03,
-                        SHUF00, SHUF01, SHUF02, SHUF03,
-                        SHUF01, SHUF02, SHUF00, SHUF03,
+                        SHUF00, SHUF01, SHUF02, SHUF03, SHUF00, SHUF01, SHUF02, SHUF03, SHUF00,
+                        SHUF01, SHUF02, SHUF03, SHUF01, SHUF02, SHUF00, SHUF03,
                     ),
                     Bitvec16x16::new(
-                        SHUF00, SHUF01, SHUF02, SHUF03,
-                        SHUF00, SHUF01, SHUF02, SHUF03,
-                        SHUF00, SHUF01, SHUF02, SHUF03,
-                        SHUF02, SHUF00, SHUF01, SHUF03,
+                        SHUF00, SHUF01, SHUF02, SHUF03, SHUF00, SHUF01, SHUF02, SHUF03, SHUF00,
+                        SHUF01, SHUF02, SHUF03, SHUF02, SHUF00, SHUF01, SHUF03,
                     ),
                 ],
             ],
             cell3x3_mask: Bitvec16x16::new(
-                K_ALL, K_ALL, K_ALL, 0,
-                K_ALL, K_ALL, K_ALL, 0,
-                K_ALL, K_ALL, K_ALL, 0,
-                0, 0, 0, 0,
+                K_ALL, K_ALL, K_ALL, 0, K_ALL, K_ALL, K_ALL, 0, K_ALL, K_ALL, K_ALL, 0, 0, 0, 0, 0,
             ),
             row_rotate_3x3_1: Bitvec16x16::new(
-                SHUF01, SHUF02, SHUF00, SHUF03, SHUF05, SHUF06, SHUF04, SHUF07,
-                SHUF01, SHUF02, SHUF00, SHUF03, SHUF04, SHUF05, SHUF06, SHUF07,
+                SHUF01, SHUF02, SHUF00, SHUF03, SHUF05, SHUF06, SHUF04, SHUF07, SHUF01, SHUF02,
+                SHUF00, SHUF03, SHUF04, SHUF05, SHUF06, SHUF07,
             ),
             row_rotate_3x3_2: Bitvec16x16::new(
-                SHUF02, SHUF00, SHUF01, SHUF03, SHUF06, SHUF04, SHUF05, SHUF07,
-                SHUF02, SHUF00, SHUF01, SHUF03, SHUF04, SHUF05, SHUF06, SHUF07,
+                SHUF02, SHUF00, SHUF01, SHUF03, SHUF06, SHUF04, SHUF05, SHUF07, SHUF02, SHUF00,
+                SHUF01, SHUF03, SHUF04, SHUF05, SHUF06, SHUF07,
             ),
             one_value_mask: [
                 Bitvec08x16::all(1u16 << 0),
@@ -387,9 +391,7 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
             let cells = state.boxen[box_idx].cells;
             let counts = cells.popcounts9();
 
-            let box_minimums = Bitvec16x16::new(
-                1, 1, 1, 6, 1, 1, 1, 6, 1, 1, 1, 6, 6, 6, 6, 0,
-            );
+            let box_minimums = Bitvec16x16::new(1, 1, 1, 6, 1, 1, 1, 6, 1, 1, 1, 6, 6, 6, 6, 0);
             if counts.any_less_than(&box_minimums) {
                 return false;
             }
@@ -406,7 +408,12 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
                 let h_elims = &mut h_bands[0][box_i].eliminations;
                 let v_elims = &mut v_bands[0][box_j].eliminations;
                 Self::assertions_to_eliminations(
-                    &all_assertions, box_i, box_j, &mut eliminating, h_elims, v_elims,
+                    &all_assertions,
+                    box_i,
+                    box_j,
+                    &mut eliminating,
+                    h_elims,
+                    v_elims,
                 );
             }
 
@@ -415,6 +422,7 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
             }
         }
 
+        #[allow(clippy::if_same_then_else)]
         if FROM_VERTICAL {
             Self::band_eliminate::<false>(state, box_i, box_j)
                 && Self::band_eliminate::<true>(state, box_j, box_i)
@@ -456,11 +464,8 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
             &across_rows,
             &cell_assertions_only.which_non_zero(),
         );
-        *box_eliminations = Bitvec16x16::x_y_xor_z_or(
-            &new_box_elims,
-            &cell_assertions_only,
-            box_eliminations,
-        );
+        *box_eliminations =
+            Bitvec16x16::x_y_xor_z_or(&new_box_elims, &cell_assertions_only, box_eliminations);
 
         let hv_neg_triad_assertions = Bitvec16x16::from_halves(
             Self::horizontal_triads(assertions),
@@ -489,8 +494,8 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
     #[inline]
     fn horizontal_triads(cells: &Bitvec16x16) -> Bitvec08x16 {
         let split_triads = cells.shuffle(&Bitvec16x16::new(
-            0xffff, 0xffff, 0xffff, 0xffff, SHUF03, SHUF07, 0xffff, 0xffff,
-            0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, SHUF03, 0xffff,
+            0xffff, 0xffff, 0xffff, 0xffff, SHUF03, SHUF07, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+            0xffff, 0xffff, 0xffff, SHUF03, 0xffff,
         ));
         split_triads.get_lo() | split_triads.get_hi()
     }
@@ -525,7 +530,8 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
         let t = tables();
         let vert = if VERTICAL { 1 } else { 0 };
 
-        if !state.bands[vert][band_idx].configurations
+        if !state.bands[vert][band_idx]
+            .configurations
             .intersects(&state.bands[vert][band_idx].eliminations)
         {
             return true;
@@ -535,9 +541,8 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
         state.bands[vert][band_idx].configurations =
             state.bands[vert][band_idx].configurations.and_not(&elims);
 
-        let mut triads = Self::configurations_to_positive_triads(
-            &state.bands[vert][band_idx].configurations,
-        );
+        let mut triads =
+            Self::configurations_to_positive_triads(&state.bands[vert][band_idx].configurations);
         let counts = triads.popcounts9();
 
         let asserting = triads & counts.which_equal(&Bitvec16x16::all(3));
@@ -545,8 +550,10 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
         let hi = asserting.get_hi();
 
         let elims1 = Bitvec08x16::x_y_or_z_or(
-            &lo.rotate_cols().shuffle(&t.triads_shift1_to_config_elims[0]),
-            &lo.rotate_cols().shuffle(&t.triads_shift2_to_config_elims[0]),
+            &lo.rotate_cols()
+                .shuffle(&t.triads_shift1_to_config_elims[0]),
+            &lo.rotate_cols()
+                .shuffle(&t.triads_shift2_to_config_elims[0]),
             &lo.shuffle(&t.triads_shift1_to_config_elims[1]),
         );
         state.bands[vert][band_idx].configurations =
@@ -554,15 +561,16 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
 
         let elims2 = Bitvec08x16::x_y_or_z_or(
             &lo.shuffle(&t.triads_shift2_to_config_elims[1]),
-            &hi.rotate_cols().shuffle(&t.triads_shift1_to_config_elims[2]),
-            &hi.rotate_cols().shuffle(&t.triads_shift2_to_config_elims[2]),
+            &hi.rotate_cols()
+                .shuffle(&t.triads_shift1_to_config_elims[2]),
+            &hi.rotate_cols()
+                .shuffle(&t.triads_shift2_to_config_elims[2]),
         );
         state.bands[vert][band_idx].configurations =
             state.bands[vert][band_idx].configurations.and_not(&elims2);
 
-        triads = Self::configurations_to_positive_triads(
-            &state.bands[vert][band_idx].configurations,
-        );
+        triads =
+            Self::configurations_to_positive_triads(&state.bands[vert][band_idx].configurations);
 
         let peer: [usize; 3] = [t.mod3[from_peer + 1], t.mod3[from_peer + 2], from_peer];
         let box_peers = t.box_peers[vert][band_idx];
@@ -710,7 +718,11 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
     fn count_solutions_consistent_with_partial_assignment(&mut self, state: &mut State) {
         // DT_IN: increment depth before emitting this frame's trace lines.
         #[cfg(feature = "debug-trace")]
-        let dt_d = DT_DEPTH.with(|d| { let v = d.get() + 1; d.set(v); v });
+        let dt_d = DT_DEPTH.with(|d| {
+            let v = d.get() + 1;
+            d.set(v);
+            v
+        });
 
         // DT_C: emit current state's band config popcounts.
         #[cfg(feature = "debug-trace")]
@@ -772,8 +784,9 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
 
         let elim_mask =
             &t.cell_assignment_eliminations[(digit - b'1') as usize][indexing.elem as usize];
-        state.boxen[indexing.r#box as usize].cells =
-            state.boxen[indexing.r#box as usize].cells.and_not(elim_mask);
+        state.boxen[indexing.r#box as usize].cells = state.boxen[indexing.r#box as usize]
+            .cells
+            .and_not(elim_mask);
 
         let cand_all = Bitvec08x16::all(candidate);
         state.bands[0][indexing.box_i as usize].eliminations = Bitvec08x16::x_y_and_z_or(
@@ -856,8 +869,7 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
     // ── Solution extraction ──────────────────────────────────────────────────
 
     fn extract_mini_row(minirow: u64, minirow_base: usize, solution: &mut [u8]) {
-        solution[minirow_base] =
-            b'1' + low_order_bit_index((minirow & 0xffff) as u32) as u8;
+        solution[minirow_base] = b'1' + low_order_bit_index((minirow & 0xffff) as u32) as u8;
         solution[minirow_base + 1] =
             b'1' + low_order_bit_index(((minirow >> 16) & 0xffff) as u32) as u8;
         solution[minirow_base + 2] =
@@ -1010,23 +1022,14 @@ pub fn enumerate(input: &[u8], limit: usize, mut callback: impl FnMut(&[u8; 81])
 // ──────────────────────────────────────────────────────────────────────────────
 // GeneratorDpllTriadSimd  (used by public constrain/minimize API)
 // ──────────────────────────────────────────────────────────────────────────────
-
+#[derive(Default)]
 pub struct GeneratorDpllTriadSimd {
     solver: SolverDpllTriadSimd<0>,
     util: crate::util::Util,
 }
 
-impl Default for GeneratorDpllTriadSimd {
-    fn default() -> Self {
-        Self {
-            solver: SolverDpllTriadSimd::default(),
-            util: crate::util::Util::new(),
-        }
-    }
-}
-
 impl GeneratorDpllTriadSimd {
-    pub fn constrain(&mut self, pencilmark: bool, puzzle: &mut Vec<u8>) -> bool {
+    pub fn constrain(&mut self, pencilmark: bool, puzzle: &mut [u8]) -> bool {
         let mut state = State::default();
         if pencilmark {
             SolverDpllTriadSimd::<0>::init_pencilmark_by_box(puzzle, &mut state);
@@ -1048,7 +1051,7 @@ impl GeneratorDpllTriadSimd {
                 }
             }
 
-            let t = tables();
+            let _t = tables();
             let row = cell / 9;
             let col = cell % 9;
             let box_idx = (row / 3) * 3 + (col / 3);
@@ -1060,7 +1063,11 @@ impl GeneratorDpllTriadSimd {
                 let mut restrict = state.boxen[box_idx].cells;
                 restrict.insert(
                     elm_idx,
-                    if pencilmark { candidates ^ candidate } else { candidate },
+                    if pencilmark {
+                        candidates ^ candidate
+                    } else {
+                        candidate
+                    },
                 );
                 let mut test_state = state.clone();
                 if SolverDpllTriadSimd::<0>::box_restrict::<false>(
@@ -1070,8 +1077,11 @@ impl GeneratorDpllTriadSimd {
                 ) {
                     let cell_or_literal = if pencilmark { literal } else { cell };
                     let prior = puzzle[cell_or_literal];
-                    puzzle[cell_or_literal] =
-                        if pencilmark { b'.' } else { b'1' + (literal % 9) as u8 };
+                    puzzle[cell_or_literal] = if pencilmark {
+                        b'.'
+                    } else {
+                        b'1' + (literal % 9) as u8
+                    };
                     match self.solver.safe_count_solutions(test_state.clone(), 2) {
                         0 => {
                             puzzle[cell_or_literal] = prior;
@@ -1089,7 +1099,7 @@ impl GeneratorDpllTriadSimd {
         false
     }
 
-    pub fn minimize(&mut self, pencilmark: bool, monotonic: bool, puzzle: &mut Vec<u8>) -> bool {
+    pub fn minimize(&mut self, pencilmark: bool, monotonic: bool, puzzle: &mut [u8]) -> bool {
         let mut restored_clue = false;
         let perm = self.util.permutation(729);
         for &cell_or_literal in &perm {

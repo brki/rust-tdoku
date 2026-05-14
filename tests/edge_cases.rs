@@ -32,6 +32,7 @@ const EMPTY_PUZZLE: &str =
 ///   Cell  0 (row 0, col 0, box 0): '1'
 ///   Cell 40 (row 4, col 4, box 4): '5'
 ///   Cell 80 (row 8, col 8, box 8): '9'
+#[allow(dead_code)]
 const SPARSE_PUZZLE: &str =
     "1.......................................5.......................................9";
 
@@ -84,7 +85,11 @@ fn to_pencilmark(vanilla: &str) -> String {
         if ch >= '1' && ch <= '9' {
             let digit = ch as u8 - b'1';
             for d in 0..9u8 {
-                pm.push(if d == digit { char::from(b'1' + d) } else { '.' });
+                pm.push(if d == digit {
+                    char::from(b'1' + d)
+                } else {
+                    '.'
+                });
             }
         } else {
             for d in 0..9u8 {
@@ -106,21 +111,30 @@ fn sol_str(bytes: &[u8; 81]) -> &str {
 fn test_empty_puzzle_basic() {
     let (count, sol, _) = solver_basic::solve(EMPTY_PUZZLE.as_bytes(), 1, 0);
     assert!(count >= 1, "empty puzzle must have ≥1 solution");
-    assert!(is_valid_solution(sol_str(&sol)), "returned solution must be valid");
+    assert!(
+        is_valid_solution(sol_str(&sol)),
+        "returned solution must be valid"
+    );
 }
 
 #[test]
 fn test_empty_puzzle_scc() {
     let (count, sol, _) = solver_dpll_triad_scc::solve(EMPTY_PUZZLE.as_bytes(), 1, 3);
     assert!(count >= 1, "empty puzzle must have ≥1 solution");
-    assert!(is_valid_solution(sol_str(&sol)), "returned solution must be valid");
+    assert!(
+        is_valid_solution(sol_str(&sol)),
+        "returned solution must be valid"
+    );
 }
 
 #[test]
 fn test_empty_puzzle_simd() {
     let (count, sol, _) = solver_dpll_triad_simd::solve(EMPTY_PUZZLE.as_bytes(), 1, 0);
     assert!(count >= 1, "empty puzzle must have ≥1 solution");
-    assert!(is_valid_solution(sol_str(&sol)), "returned solution must be valid");
+    assert!(
+        is_valid_solution(sol_str(&sol)),
+        "returned solution must be valid"
+    );
 }
 
 #[test]
@@ -372,7 +386,10 @@ fn test_enumerate_return_equals_calls() {
     let total = rdoku::enumerate(UNIQUE_PUZZLE, 100, |_| {
         calls += 1;
     });
-    assert_eq!(total, calls, "return value must equal callback invocation count");
+    assert_eq!(
+        total, calls,
+        "return value must equal callback invocation count"
+    );
     assert_eq!(total, 1, "unique puzzle must have exactly 1 solution");
 }
 
@@ -388,7 +405,10 @@ fn test_constrain_already_unique() {
     let mut puzzle = UNIQUE_PUZZLE.to_string();
     rdoku::constrain(false, &mut puzzle);
     let (count, _, _) = rdoku::solve_sudoku(&puzzle, 2, 0);
-    assert_eq!(count, 1, "puzzle must still have a unique solution after constrain");
+    assert_eq!(
+        count, 1,
+        "puzzle must still have a unique solution after constrain"
+    );
 }
 
 /// constrain on the empty puzzle: returns true; result is a unique puzzle.
@@ -398,7 +418,10 @@ fn test_constrain_empty_puzzle() {
     let ok = rdoku::constrain(false, &mut puzzle);
     assert!(ok, "constrain on empty puzzle must return true");
     let (count, _, _) = rdoku::solve_sudoku(&puzzle, 2, 0);
-    assert_eq!(count, 1, "constrained empty puzzle must have a unique solution");
+    assert_eq!(
+        count, 1,
+        "constrained empty puzzle must have a unique solution"
+    );
 }
 
 /// minimize preserves uniqueness.
@@ -407,7 +430,10 @@ fn test_minimize_preserves_uniqueness() {
     let mut puzzle = UNIQUE_PUZZLE.to_string();
     rdoku::minimize(false, false, &mut puzzle);
     let (count, _, _) = rdoku::solve_sudoku(&puzzle, 2, 0);
-    assert_eq!(count, 1, "minimized puzzle must still have a unique solution");
+    assert_eq!(
+        count, 1,
+        "minimized puzzle must still have a unique solution"
+    );
 }
 
 /// minimize with monotonic=true also preserves uniqueness.
@@ -416,7 +442,10 @@ fn test_minimize_monotonic_preserves_uniqueness() {
     let mut puzzle = UNIQUE_PUZZLE.to_string();
     rdoku::minimize(false, true, &mut puzzle);
     let (count, _, _) = rdoku::solve_sudoku(&puzzle, 2, 0);
-    assert_eq!(count, 1, "monotonic-minimized puzzle must still have a unique solution");
+    assert_eq!(
+        count, 1,
+        "monotonic-minimized puzzle must still have a unique solution"
+    );
 }
 
 /// After minimization the result is still uniquely solvable and has no more
@@ -439,7 +468,10 @@ fn test_minimize_fewer_or_equal_clues() {
     );
     // Uniqueness must still hold.
     let (count, _, _) = rdoku::solve_sudoku(&puzzle, 2, 0);
-    assert_eq!(count, 1, "minimized puzzle must still have a unique solution");
+    assert_eq!(
+        count, 1,
+        "minimized puzzle must still have a unique solution"
+    );
 }
 
 // ──────────────────────── memory / resource invariants ──────────────────────
@@ -491,8 +523,7 @@ fn test_sparse_puzzle_limited_stack() {
 /// solution count and, for unique-solution puzzles, on the solution string.
 #[test]
 fn test_all_solvers_agree() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/test_puzzles");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test_puzzles");
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return, // skip if test data unavailable
@@ -501,13 +532,10 @@ fn test_all_solvers_agree() {
     for line in contents.lines().filter(|l| !l.is_empty()) {
         let mut parts = line.splitn(3, ':');
         let puzzle = parts.next().unwrap_or("").to_string();
-        let expected_count: usize =
-            parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let expected_count: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
-        let (basic_count, _basic_sol, _) =
-            solver_basic::solve(puzzle.as_bytes(), 100_000, 0);
-        let (scc_count, _scc_sol, _) =
-            solver_dpll_triad_scc::solve(puzzle.as_bytes(), 100_000, 3);
+        let (basic_count, _basic_sol, _) = solver_basic::solve(puzzle.as_bytes(), 100_000, 0);
+        let (scc_count, _scc_sol, _) = solver_dpll_triad_scc::solve(puzzle.as_bytes(), 100_000, 3);
         let (simd_count, _simd_sol, _) =
             solver_dpll_triad_simd::solve(puzzle.as_bytes(), 100_000, 0);
 

@@ -25,6 +25,18 @@ const N_BAND_CONFIGS: usize = 28 * 6 * 6 * 6 * 6;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Read a little-endian `u32` from `bytes` starting at `offset`.
+#[inline]
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+/// Read a little-endian `u16` from `bytes` starting at `offset`.
+#[inline]
+fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
+}
+
 /// Maps (band, position) → flat index using horizontal (row-major) indexing.
 #[inline]
 fn horiz_indexing(x: usize, y: usize) -> usize {
@@ -57,15 +69,15 @@ fn band_init(configuration: usize, indexing: fn(usize, usize) -> usize, pattern:
                 pattern[indexing(i, PERMUTATIONS[p[i][1]][j] + 6)] = src1;
             }
         } else {
-            pattern[indexing(i, PERMUTATIONS[p[i][0]][(pick[i] + 0) % 3] + 3)] =
-                pattern[indexing((i + 2) % 3, (pick[(i + 2) % 3] + 0) % 3)];
+            pattern[indexing(i, PERMUTATIONS[p[i][0]][pick[i] % 3] + 3)] =
+                pattern[indexing((i + 2) % 3, pick[(i + 2) % 3] % 3)];
             pattern[indexing(i, PERMUTATIONS[p[i][0]][(pick[i] + 1) % 3] + 3)] =
                 pattern[indexing((i + 1) % 3, (pick[(i + 1) % 3] + 1) % 3)];
             pattern[indexing(i, PERMUTATIONS[p[i][0]][(pick[i] + 2) % 3] + 3)] =
                 pattern[indexing((i + 1) % 3, (pick[(i + 1) % 3] + 2) % 3)];
 
-            pattern[indexing(i, PERMUTATIONS[p[i][1]][(pick[i] + 0) % 3] + 6)] =
-                pattern[indexing((i + 1) % 3, (pick[(i + 1) % 3] + 0) % 3)];
+            pattern[indexing(i, PERMUTATIONS[p[i][1]][pick[i] % 3] + 6)] =
+                pattern[indexing((i + 1) % 3, pick[(i + 1) % 3] % 3)];
             pattern[indexing(i, PERMUTATIONS[p[i][1]][(pick[i] + 1) % 3] + 6)] =
                 pattern[indexing((i + 2) % 3, (pick[(i + 2) % 3] + 1) % 3)];
             pattern[indexing(i, PERMUTATIONS[p[i][1]][(pick[i] + 2) % 3] + 6)] =
@@ -90,6 +102,7 @@ pub fn get_pattern(pattern_id: usize) -> [u8; 81] {
 }
 
 /// Stride between index entries: every 2^20 grids gets one entry.
+#[allow(dead_code)]
 const INDEX_STEP: usize = 1 << 20;
 
 /// Returns the solved grid at position `grid_idx` using precomputed `index` and `table` data.
@@ -102,27 +115,17 @@ pub fn get_grid(grid_idx: usize, index: &[u8], table: &[u8]) -> [u8; 81] {
     let indexed_grid_idx = grid_idx & !((1usize << 20) - 1);
 
     let entry_base = (grid_idx >> 20) * 6;
-    let current_pattern_idx_init =
-        u32::from_le_bytes(index[entry_base..entry_base + 4].try_into().unwrap()) as usize;
-    let indexed_grid_offset =
-        u16::from_le_bytes(index[entry_base + 4..entry_base + 6].try_into().unwrap()) as usize;
+    let current_pattern_idx_init = read_u32_le(index, entry_base) as usize;
+    let indexed_grid_offset = read_u16_le(index, entry_base + 4) as usize;
 
     let mut to_skip = indexed_grid_offset + (grid_idx - indexed_grid_idx);
     let mut current_pattern_idx = current_pattern_idx_init;
-    let mut pattern_count = u16::from_le_bytes(
-        table[current_pattern_idx * 2..current_pattern_idx * 2 + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let mut pattern_count = read_u16_le(table, current_pattern_idx * 2) as usize;
 
     while to_skip >= pattern_count {
         to_skip -= pattern_count;
         current_pattern_idx += 1;
-        pattern_count = u16::from_le_bytes(
-            table[current_pattern_idx * 2..current_pattern_idx * 2 + 2]
-                .try_into()
-                .unwrap(),
-        ) as usize;
+        pattern_count = read_u16_le(table, current_pattern_idx * 2) as usize;
     }
 
     let pattern = get_pattern(current_pattern_idx);
@@ -146,27 +149,17 @@ pub fn enumerate_grids(
     let indexed_grid_idx = first_grid_idx & !((1usize << 20) - 1);
 
     let entry_base = (first_grid_idx >> 20) * 6;
-    let current_pattern_idx_init =
-        u32::from_le_bytes(index[entry_base..entry_base + 4].try_into().unwrap()) as usize;
-    let indexed_grid_offset =
-        u16::from_le_bytes(index[entry_base + 4..entry_base + 6].try_into().unwrap()) as usize;
+    let current_pattern_idx_init = read_u32_le(index, entry_base) as usize;
+    let indexed_grid_offset = read_u16_le(index, entry_base + 4) as usize;
 
     let mut to_skip = indexed_grid_offset + (first_grid_idx - indexed_grid_idx);
     let mut current_pattern_idx = current_pattern_idx_init;
-    let mut pattern_count = u16::from_le_bytes(
-        table[current_pattern_idx * 2..current_pattern_idx * 2 + 2]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let mut pattern_count = read_u16_le(table, current_pattern_idx * 2) as usize;
 
     while to_skip >= pattern_count {
         to_skip -= pattern_count;
         current_pattern_idx += 1;
-        pattern_count = u16::from_le_bytes(
-            table[current_pattern_idx * 2..current_pattern_idx * 2 + 2]
-                .try_into()
-                .unwrap(),
-        ) as usize;
+        pattern_count = read_u16_le(table, current_pattern_idx * 2) as usize;
     }
 
     let mut remaining = count;
@@ -236,7 +229,11 @@ mod tests {
         // All bytes in a pattern should be ASCII digits 1-9 or '.'.
         let pattern = get_pattern(0);
         for &b in pattern.iter() {
-            assert!(b == b'.' || (b >= b'1' && b <= b'9'), "unexpected byte {}", b);
+            assert!(
+                b == b'.' || (b >= b'1' && b <= b'9'),
+                "unexpected byte {}",
+                b
+            );
         }
     }
 

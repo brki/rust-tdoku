@@ -137,7 +137,7 @@ impl SolverBasic {
                 let bx = BOXEN[cell];
                 let ch = buf[cell];
                 // Treat anything that isn't a digit '1'-'9' as an empty cell.
-                if ch >= b'1' && ch <= b'9' {
+                if (b'1'..=b'9').contains(&ch) {
                     let value: u32 = 1u32 << (ch - b'1') as u32;
                     if self.rows[row] & value != 0
                         && self.cols[col] & value != 0
@@ -187,7 +187,8 @@ mod tests {
     #[test]
     fn test_invalid_puzzle() {
         // Two 1s in the same row — contradiction in givens.
-        let bad81 = b"11...............................................................................";
+        let bad81 =
+            b"11...............................................................................";
         assert_eq!(bad81.len(), 81);
         let (count, _sol, _guesses) = solve(bad81, 1, 0);
         assert_eq!(count, 0);

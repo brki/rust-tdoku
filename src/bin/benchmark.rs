@@ -177,14 +177,21 @@ impl Benchmark {
     // ── Permutation helpers ────────────────────────────────────────────────
 
     /// Permute the puzzle at slot `slot` in place.
-    /// Uses a temporary heap buffer to avoid simultaneous mutable borrows of
-    /// `self.dataset` and `self.util`.
+    /// Uses destructuring to avoid simultaneous mutable borrow conflicts
+    /// between `dataset` and `util`.
     fn permute_slot(&mut self, slot: usize) {
-        let ps = self.puzzle_size;
-        let start = slot * ps;
-        let mut buf: Vec<u8> = self.dataset[start..start + ps].to_vec();
-        self.util.permute_sudoku(&mut buf, self.options.pencilmark);
-        self.dataset[start..start + ps].copy_from_slice(&buf);
+        let Benchmark {
+            dataset,
+            puzzle_size,
+            options,
+            util,
+            ..
+        } = self;
+        let start = slot * *puzzle_size;
+        util.permute_sudoku(
+            &mut dataset[start..start + *puzzle_size],
+            options.pencilmark,
+        );
     }
 
     // ── Dataset loading ────────────────────────────────────────────────────
@@ -265,7 +272,8 @@ impl Benchmark {
                 for j in 0..num_processed {
                     let src_start = j * ps;
                     let dst_start = (num_loaded + j) * ps;
-                    self.dataset.copy_within(src_start..src_start + ps, dst_start);
+                    self.dataset
+                        .copy_within(src_start..src_start + ps, dst_start);
                     if self.options.randomize {
                         let slot = num_loaded + j;
                         self.permute_slot(slot);
@@ -281,7 +289,8 @@ impl Benchmark {
             let which = self.util.random_uint() as usize % num_source;
             let src_start = which * ps;
             let dst_start = i * ps;
-            self.dataset.copy_within(src_start..src_start + ps, dst_start);
+            self.dataset
+                .copy_within(src_start..src_start + ps, dst_start);
             if self.options.randomize {
                 self.permute_slot(i);
             }
@@ -295,7 +304,7 @@ impl Benchmark {
         for row in 0..9 {
             for col in 0..9 {
                 let b = solution[row * 9 + col];
-                if b < b'1' || b > b'9' {
+                if !(b'1'..=b'9').contains(&b) {
                     return false;
                 }
                 let bit = 1u32 << (b - b'1');
@@ -340,8 +349,7 @@ impl Benchmark {
             let build_flags = if cfg!(debug_assertions) { "-g" } else { "-O3" };
             if solver.returns_guess_count {
                 println!(
-                    "{},{},{},{},{},{},{},{},{}",
-                    "rustc",
+                    "rustc,{},{},{},{},{},{},{},{}",
                     env!("CARGO_PKG_VERSION"),
                     build_flags,
                     dataset_filename,
@@ -353,8 +361,7 @@ impl Benchmark {
                 );
             } else {
                 println!(
-                    "{},{},{},{},{},{},{},N/A,N/A",
-                    "rustc",
+                    "rustc,{},{},{},{},{},{},N/A,N/A",
                     env!("CARGO_PKG_VERSION"),
                     build_flags,
                     dataset_filename,
@@ -401,9 +408,7 @@ impl Benchmark {
             let (count, sol, _guesses) = solver.solve(puzzle, 1);
             if !allow_zero
                 && (count == 0
-                    || (validate
-                        && solver.returns_solution
-                        && !Self::validate_solution(&sol)))
+                    || (validate && solver.returns_solution && !Self::validate_solution(&sol)))
             {
                 eprintln!("Error during warmup");
                 eprintln!("{}", String::from_utf8_lossy(puzzle));
@@ -632,8 +637,7 @@ fn parse_args() -> (Options, Vec<String>, bool) {
                         }
                     }
                     's' => {
-                        options.solver_ids =
-                            Some(val.split(',').map(str::to_owned).collect());
+                        options.solver_ids = Some(val.split(',').map(str::to_owned).collect());
                     }
                     't' => {
                         if let Ok(v) = val.parse::<f64>() {
@@ -689,8 +693,7 @@ fn main() {
     let solvers: Vec<Solver> = match &options.solver_ids {
         None => all,
         Some(ids) => {
-            let id_set: std::collections::HashSet<&str> =
-                ids.iter().map(String::as_str).collect();
+            let id_set: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
             all.into_iter().filter(|s| id_set.contains(s.id)).collect()
         }
     };
@@ -715,4 +718,3 @@ fn main() {
         }
     }
 }
-

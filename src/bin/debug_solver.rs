@@ -61,5 +61,8 @@ fn main() {
         String::new()
     };
 
-    println!("count={} guesses={} solution={}", count, num_guesses, solution_str);
+    println!(
+        "count={} guesses={} solution={}",
+        count, num_guesses, solution_str
+    );
 }

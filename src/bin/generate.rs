@@ -77,7 +77,10 @@ impl Generator {
         // ≤81 levels (one per cell), so it's safe to use here for the first seed.
         let initial_seed = self.make_seed();
         for _ in 0..self.options.num_puzzles_in_pool {
-            self.pool.push(PoolEntry { loss: f64::MAX, puzzle: initial_seed.clone() });
+            self.pool.push(PoolEntry {
+                loss: f64::MAX,
+                puzzle: initial_seed.clone(),
+            });
         }
     }
 
@@ -93,13 +96,18 @@ impl Generator {
         let (count, sol_bytes, _) = rdoku::solver_basic::solve(&[b'.'; 81], 1, 0);
         if count == 0 {
             // Should never happen for the empty grid; fall back gracefully.
-            return if self.options.pencilmark { "123456789".repeat(81) } else { ".".repeat(81) };
+            return if self.options.pencilmark {
+                "123456789".repeat(81)
+            } else {
+                ".".repeat(81)
+            };
         }
 
         if self.options.pencilmark {
             // Convert the complete solution to a "fully determined" pencilmark string
             // (each cell retains only its unique digit), then minimize.
             let mut pm = Vec::with_capacity(729);
+            #[allow(clippy::needless_range_loop)]
             for cell in 0..81 {
                 let digit = sol_bytes[cell];
                 for d in 0u8..9 {
@@ -140,7 +148,10 @@ impl Generator {
                 continue;
             }
             let (_, _, loss) = self.evaluate(puzzle.as_bytes());
-            self.pool.push(PoolEntry { loss, puzzle: puzzle.clone() });
+            self.pool.push(PoolEntry {
+                loss,
+                puzzle: puzzle.clone(),
+            });
             self.pool_set.insert(puzzle);
         }
     }
@@ -210,7 +221,10 @@ impl Generator {
         if self.options.pretty {
             print!("{}", format_pretty(puzzle, self.options.pencilmark));
         }
-        println!("{} {} {:.1} {:.2}", puzzle, num_clues, geo_mean_guesses, loss);
+        println!(
+            "{} {} {:.1} {:.2}",
+            puzzle, num_clues, geo_mean_guesses, loss
+        );
     }
 
     fn generate(&mut self) {
@@ -294,7 +308,10 @@ impl Generator {
             if let Some(worst_idx) = self.worst_idx() {
                 let old = std::mem::replace(
                     &mut self.pool[worst_idx],
-                    PoolEntry { loss, puzzle: puzzle_str.clone() },
+                    PoolEntry {
+                        loss,
+                        puzzle: puzzle_str.clone(),
+                    },
                 );
                 self.pool_set.remove(&old.puzzle);
                 self.pool_set.insert(puzzle_str);
@@ -335,7 +352,11 @@ fn format_pretty(puzzle: &str, pencilmark: bool) -> String {
                         count += 1;
                     }
                 }
-                if count == 1 { found } else { b'.' }
+                if count == 1 {
+                    found
+                } else {
+                    b'.'
+                }
             })
             .collect()
     } else {

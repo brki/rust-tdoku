@@ -26,8 +26,8 @@ fn test_puzzles_path() -> PathBuf {
 
 fn load_test_cases() -> Vec<TestCase> {
     let path = test_puzzles_path();
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {path:?}: {e}"));
+    let contents =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {path:?}: {e}"));
 
     contents
         .lines()
@@ -49,7 +49,11 @@ fn load_test_cases() -> Vec<TestCase> {
             } else {
                 None
             };
-            TestCase { puzzle, expected_count, expected_solution }
+            TestCase {
+                puzzle,
+                expected_count,
+                expected_solution,
+            }
         })
         .collect()
 }
@@ -67,7 +71,8 @@ fn sol_to_string(bytes: &[u8; 81]) -> String {
 /// the SIMD solver must not infinite-loop on sparse puzzles.
 #[test]
 fn test_minimize_complete_solution() {
-    let puzzle = ".5..83.17...1..4..3.4..56.8....3...9.9.8245....6....7...9....5...729..861.36.72.4";
+    let puzzle =
+        ".5..83.17...1..4..3.4..56.8....3...9.9.8245....6....7...9....5...729..861.36.72.4";
     let (count, _sol, _) = rdoku::solve_sudoku(puzzle, 2, 0);
     assert_eq!(count, 1);
 
@@ -75,7 +80,8 @@ fn test_minimize_complete_solution() {
     let (ec, _, _) = rdoku::solve_sudoku(easy, 2, 0);
     assert_eq!(ec, 1);
 
-    let puzzle24 = "....83.17...1..4..3.4..56.8....3...9.9.8245....6....7...9....5...729..861.36.72.4";
+    let puzzle24 =
+        "....83.17...1..4..3.4..56.8....3...9.9.8245....6....7...9....5...729..861.36.72.4";
     let (c24, _, _) = rdoku::solve_sudoku(puzzle24, 2, 0);
     assert!(c24 >= 1);
 }
@@ -88,17 +94,14 @@ fn test_minimize_complete_solution() {
 #[test]
 fn test_basic_solver() {
     for tc in load_test_cases() {
-        let (count, _, _) =
-            rdoku::solver_basic::solve(tc.puzzle.as_bytes(), 100_000, 0);
+        let (count, _, _) = rdoku::solver_basic::solve(tc.puzzle.as_bytes(), 100_000, 0);
         assert_eq!(
-            count,
-            tc.expected_count,
+            count, tc.expected_count,
             "basic solver: count mismatch for puzzle {}",
             tc.puzzle
         );
         if let Some(ref expected_sol) = tc.expected_solution {
-            let (_, sol_bytes, _) =
-                rdoku::solver_basic::solve(tc.puzzle.as_bytes(), 1, 0);
+            let (_, sol_bytes, _) = rdoku::solver_basic::solve(tc.puzzle.as_bytes(), 1, 0);
             assert_eq!(
                 &sol_to_string(&sol_bytes),
                 expected_sol,
@@ -113,17 +116,14 @@ fn test_basic_solver() {
 #[test]
 fn test_scc_solver() {
     for tc in load_test_cases() {
-        let (count, _, _) =
-            rdoku::solver_dpll_triad_scc::solve(tc.puzzle.as_bytes(), 100_000, 3);
+        let (count, _, _) = rdoku::solver_dpll_triad_scc::solve(tc.puzzle.as_bytes(), 100_000, 3);
         assert_eq!(
-            count,
-            tc.expected_count,
+            count, tc.expected_count,
             "scc solver: count mismatch for puzzle {}",
             tc.puzzle
         );
         if let Some(ref expected_sol) = tc.expected_solution {
-            let (_, sol_bytes, _) =
-                rdoku::solver_dpll_triad_scc::solve(tc.puzzle.as_bytes(), 1, 3);
+            let (_, sol_bytes, _) = rdoku::solver_dpll_triad_scc::solve(tc.puzzle.as_bytes(), 1, 3);
             assert_eq!(
                 &sol_to_string(&sol_bytes),
                 expected_sol,
@@ -138,11 +138,9 @@ fn test_scc_solver() {
 #[test]
 fn test_simd_solver() {
     for tc in load_test_cases() {
-        let (count, _, _) =
-            rdoku::solver_dpll_triad_simd::solve(tc.puzzle.as_bytes(), 100_000, 0);
+        let (count, _, _) = rdoku::solver_dpll_triad_simd::solve(tc.puzzle.as_bytes(), 100_000, 0);
         assert_eq!(
-            count,
-            tc.expected_count,
+            count, tc.expected_count,
             "simd solver: count mismatch for puzzle {}",
             tc.puzzle
         );
@@ -169,16 +167,14 @@ fn test_public_api_solve() {
     for tc in load_test_cases() {
         let (count, _, _) = rdoku::solve_sudoku(&tc.puzzle, 100_000, 0);
         assert_eq!(
-            count,
-            tc.expected_count,
+            count, tc.expected_count,
             "public API solve: count mismatch for puzzle {}",
             tc.puzzle
         );
         if let Some(ref expected_sol) = tc.expected_solution {
             let (_, sol_str, _) = rdoku::solve_sudoku(&tc.puzzle, 1, 0);
             assert_eq!(
-                &sol_str,
-                expected_sol,
+                &sol_str, expected_sol,
                 "public API solve: solution mismatch for puzzle {}",
                 tc.puzzle
             );
@@ -198,14 +194,12 @@ fn test_public_api_enumerate() {
             callback_count += 1;
         });
         assert_eq!(
-            ret,
-            tc.expected_count,
+            ret, tc.expected_count,
             "enumerate return value mismatch for puzzle {}",
             tc.puzzle
         );
         assert_eq!(
-            callback_count,
-            tc.expected_count,
+            callback_count, tc.expected_count,
             "enumerate callback count mismatch for puzzle {}",
             tc.puzzle
         );

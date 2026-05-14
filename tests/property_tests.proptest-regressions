@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1f91ac6a4dd6e878a5d0facc8642ae0ed70f0c60fa4784c1aee76698d7bbfd4a # shrinks to mut puzzle = "....839.7....624.......5....2....1.........6..3.51.8.......8.............8......."
+cc c61d1b5026ada8eba4707245c965b8ac669de65291c84f58d655816860fb6a24 # shrinks to puzzle = "...48.....78...........5....2...6..9....2.5.3..6.19.................1....8.....9."

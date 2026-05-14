@@ -61,9 +61,12 @@ fn build_images() {
     let out = Command::new("docker")
         .args([
             "build",
-            "--platform", "linux/amd64",
-            "-f", debug.join("Dockerfile.tdoku").to_str().unwrap(),
-            "-t", "tdoku-debug",
+            "--platform",
+            "linux/amd64",
+            "-f",
+            debug.join("Dockerfile.tdoku").to_str().unwrap(),
+            "-t",
+            "tdoku-debug",
             tdoku.to_str().unwrap(),
         ])
         .output()
@@ -79,9 +82,12 @@ fn build_images() {
     let out = Command::new("docker")
         .args([
             "build",
-            "--platform", "linux/amd64",
-            "-f", debug.join("Dockerfile.rdoku").to_str().unwrap(),
-            "-t", "rdoku-debug",
+            "--platform",
+            "linux/amd64",
+            "-f",
+            debug.join("Dockerfile.rdoku").to_str().unwrap(),
+            "-t",
+            "rdoku-debug",
             repo_dir().to_str().unwrap(),
         ])
         .output()
@@ -99,10 +105,17 @@ fn run_tdoku(puzzle: &str, limit: u32) -> (String, String) {
     let tdoku = repo_dir().join("tdoku");
     let out = Command::new("docker")
         .args([
-            "run", "--rm", "--platform", "linux/amd64",
-            "-v", &format!("{}:/tdoku", tdoku.display()),
-            "-v", "tdoku-build:/build",
-            "tdoku-debug", puzzle, &limit.to_string(),
+            "run",
+            "--rm",
+            "--platform",
+            "linux/amd64",
+            "-v",
+            &format!("{}:/tdoku", tdoku.display()),
+            "-v",
+            "tdoku-build:/build",
+            "tdoku-debug",
+            puzzle,
+            &limit.to_string(),
         ])
         .output()
         .expect("failed to run tdoku-debug container");
@@ -116,11 +129,19 @@ fn run_rdoku(puzzle: &str, limit: u32) -> (String, String) {
     let repo = repo_dir();
     let out = Command::new("docker")
         .args([
-            "run", "--rm", "--platform", "linux/amd64",
-            "-v", &format!("{}:/rdoku", repo.display()),
-            "-v", "rdoku-target:/rdoku/target",
-            "-v", "cargo-registry:/usr/local/cargo/registry",
-            "rdoku-debug", puzzle, &limit.to_string(),
+            "run",
+            "--rm",
+            "--platform",
+            "linux/amd64",
+            "-v",
+            &format!("{}:/rdoku", repo.display()),
+            "-v",
+            "rdoku-target:/rdoku/target",
+            "-v",
+            "cargo-registry:/usr/local/cargo/registry",
+            "rdoku-debug",
+            puzzle,
+            &limit.to_string(),
         ])
         .output()
         .expect("failed to run rdoku-debug container");
@@ -143,11 +164,9 @@ fn save_artifact(name: &str, content: &str) {
 fn reset_artifacts() {
     let dir = artifacts_dir();
     if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .unwrap_or_else(|e| panic!("failed to clear artifacts dir: {e}"));
+        fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("failed to clear artifacts dir: {e}"));
     }
-    fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("failed to create artifacts dir: {e}"));
+    fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("failed to create artifacts dir: {e}"));
 }
 
 // ---------------------------------------------------------------------------
@@ -277,21 +296,18 @@ fn test_phase13_comparison() {
         save_artifact(&format!("trace_diff_{}.txt", case.name), &trace_diff);
 
         // Report
-        println!(
-            "  tdoku DT events: {}",
-            dt_tdoku.lines().count()
-        );
-        println!(
-            "  rdoku DT events: {}",
-            dt_rdoku.lines().count()
-        );
+        println!("  tdoku DT events: {}", dt_tdoku.lines().count());
+        println!("  rdoku DT events: {}", dt_rdoku.lines().count());
         println!("  tdoku result: {}", tdoku_stdout.trim());
         println!("  rdoku result: {}", rdoku_stdout.trim());
 
         // Assert DT: traces are identical
         if dt_tdoku != dt_rdoku {
             eprintln!("FAIL [{}]: DT traces differ", case.name);
-            eprintln!("First 20 diff lines:\n{}", trace_diff.lines().take(20).collect::<Vec<_>>().join("\n"));
+            eprintln!(
+                "First 20 diff lines:\n{}",
+                trace_diff.lines().take(20).collect::<Vec<_>>().join("\n")
+            );
             all_passed = false;
         } else {
             println!("  DT traces: IDENTICAL");
@@ -312,5 +328,8 @@ fn test_phase13_comparison() {
     }
 
     println!("\nArtifacts saved to: {}", artifacts_dir().display());
-    assert!(all_passed, "One or more comparison cases failed; see output above and artifacts in debug/artifacts/");
+    assert!(
+        all_passed,
+        "One or more comparison cases failed; see output above and artifacts in debug/artifacts/"
+    );
 }

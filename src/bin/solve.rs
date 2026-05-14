@@ -317,7 +317,7 @@ fn main() {
             if options.count_only {
                 writeln!(out, "{}  {}", count, guesses).unwrap();
             } else {
-                let sol_out = if solution.bytes().all(|b| b == 0 || b == b'\0') {
+                let sol_out = if solution.bytes().all(|b| b == 0) {
                     ".".repeat(81)
                 } else {
                     solution.clone()
@@ -331,7 +331,11 @@ fn main() {
 
     if options.stats {
         let elapsed = start.elapsed().as_secs_f64();
-        let pps = if elapsed > 0.0 { total_puzzles as f64 / elapsed } else { f64::INFINITY };
+        let pps = if elapsed > 0.0 {
+            total_puzzles as f64 / elapsed
+        } else {
+            f64::INFINITY
+        };
         eprintln!(
             "puzzles: {}  solved: {}  guesses: {}  elapsed: {:.3}s  rate: {:.0}/s",
             total_puzzles, total_solved, total_guesses, elapsed, pps

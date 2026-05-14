@@ -1,0 +1,21 @@
+[package]
+name = "rdoku-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.rdoku]
+path = ".."
+
+# Prevent this from being a workspace member
+[[bin]]
+name = "solve_fuzz"
+path = "fuzz_targets/solve_fuzz.rs"
+test = false
+doc = false

@@ -1,9 +1,55 @@
 //! DPLL solver with triad constraints and SCC variable-selection heuristic —
 //! port of `tdoku/src/solver_dpll_triad_scc.cc`.
 //!
-//! Models Sudoku as a SAT instance with 2592 literals. Uses Boolean
-//! Constraint Propagation (BCP) with ExactlyN clauses, and a path-based
-//! Strongly-Connected-Components algorithm to guide variable selection.
+//! # SAT encoding
+//!
+//! Sudoku is reduced to a SAT problem with 2592 Boolean literals representing
+//! every possible (box, element, value) triple.  For each of the 9 boxes there
+//! are 16 *elements* arranged in a 4×4 logical grid:
+//!
+//! ```text
+//!   cells            triads
+//! ┌─────┬─────┬─────┬─────┐
+//! │ 0,0 │ 0,1 │ 0,2 │  H0 │  ← row 0: 3 cells + 1 horizontal triad
+//! ├─────┼─────┼─────┼─────┤
+//! │ 1,0 │ 1,1 │ 1,2 │  H1 │  ← row 1
+//! ├─────┼─────┼─────┼─────┤
+//! │ 2,0 │ 2,1 │ 2,2 │  H2 │  ← row 2
+//! ├─────┼─────┼─────┼─────┤
+//! │ V0  │ V1  │ V2  │  —  │  ← row 3: 3 vertical triads + 1 unused slot
+//! └─────┴─────┴─────┴─────┘
+//! ```
+//!
+//! This gives 9 cells + 3 horizontal triads + 3 vertical triads = 15 used
+//! elements per box.  With 9 values per element we get 15 × 9 = 135 positive
+//! literals per box, doubled to 270 with negations — hence 9 × 270 = **2430**
+//! *used* literals (the remaining 162 are padding for the unused 16th slot).
+//!
+//! ## Constraints
+//!
+//! - **ExactlyN (cell, value)**: each cell must have exactly one value — one
+//!   of the 9 literals is true, the other 8 are false.
+//! - **ExactlyN (triad, value)**: each triad (horizontal or vertical) must
+//!   have exactly one of a given value across its 3 cells.
+//! - **ExactlyN (band-triad, value)**: across the 3 boxes in a band, the
+//!   3 triads that span the same 3 columns/rows must contain exactly one of
+//!   each value.
+//!
+//! ExactlyN constraints are encoded as one *positive clause* (at-least-n)
+//! plus either pairwise mutual-exclusion implications (n = 1) or a single
+//! *negative clause* (at-most-n via negations).
+//!
+//! ## Search
+//!
+//! - **BCP** (Boolean Constraint Propagation): when all but one literal in a
+//!   clause are eliminated, the survivor must be asserted.  This cascades
+//!   through the implication graph built from pairwise exclusions.
+//! - **Path-based SCC** (Pearce's algorithm): the implication graph is
+//!   analyzed for strongly-connected components.  Asserting any literal in a
+//!   non-trivial SCC forces all others in that SCC, so the solver uses
+//!   component size as a branching heuristic and infers forced literals.
+//! - **Config flags**: `config` bits control SCC inference and SCC heuristic
+//!   independently (config=3 enables both).
 
 use std::cell::RefCell;
 
@@ -135,6 +181,7 @@ impl State {
 
 /// Push an implication `from → to` into the global implication lists,
 /// incrementing the logical size tracked in `implication_counts`.
+#[allow(clippy::ptr_arg)]
 fn setup_add_implication(
     from: LiteralId,
     to: LiteralId,
@@ -152,6 +199,7 @@ fn setup_add_implication(
 }
 
 /// Register a clause covering `literals` with `min` required true literals,
+#[allow(clippy::ptr_arg)]
 /// updating all the bookkeeping data structures.
 fn setup_add_clause_with_min(
     literals: &[LiteralId],
@@ -336,7 +384,14 @@ impl SolverDpllTriadScc {
                 // triads: else → ExactlyThree
                 let n = if elem / 4 < 3 && elem % 4 < 3 { 1 } else { 3 };
                 setup_add_exactly_n(
-                    &lits, n, clauses_to_lits, lits_to_clauses, cfl, pos_clauses, impls, counts,
+                    &lits,
+                    n,
+                    clauses_to_lits,
+                    lits_to_clauses,
+                    cfl,
+                    pos_clauses,
+                    impls,
+                    counts,
                 );
             }
 
@@ -435,8 +490,7 @@ impl SolverDpllTriadScc {
         state: &mut State,
     ) {
         let num_clause_lits = self.clauses_to_literals[clause_id as usize].len();
-        let initial_free =
-            self.initial_state.clause_free_literals[clause_id as usize] as usize;
+        let initial_free = self.initial_state.clause_free_literals[clause_id as usize] as usize;
         // `expect` = how many non-eliminated literals remain = min + 1.
         let expect = num_clause_lits - initial_free;
 
@@ -582,9 +636,7 @@ impl SolverDpllTriadScc {
             } else if self.literal_to_component_id[implication as usize] == -1 {
                 // Back/cross edge to a node on stack_p: merge into same SCC.
                 let imp_preorder = self.preorder_index[implication as usize];
-                while self.preorder_index[*self.stack_p.last().unwrap() as usize]
-                    > imp_preorder
-                {
+                while self.preorder_index[*self.stack_p.last().unwrap() as usize] > imp_preorder {
                     self.stack_p.pop();
                 }
             }
@@ -607,9 +659,7 @@ impl SolverDpllTriadScc {
                 }
                 // Prefer literals whose negation has no prior component, and
                 // among those prefer the largest component.
-                if !negation_has_component
-                    && component_size as i32 > self.best_component_size
-                {
+                if !negation_has_component && component_size as i32 > self.best_component_size {
                     self.best_component_size = component_size as i32;
                     self.best_component_literal = literal;
                 }
@@ -643,10 +693,9 @@ impl SolverDpllTriadScc {
             if self.preorder_index[l as usize] == -1
                 && valid_literal(l)
                 && !state.asserted.pos_or_neg(l)
+                && !self.scc_visit(l, state)
             {
-                if !self.scc_visit(l, state) {
-                    return false;
-                }
+                return false;
             }
             l += 2;
         }
@@ -749,12 +798,7 @@ impl SolverDpllTriadScc {
     // -----------------------------------------------------------------------
 
     /// Parse the input string and assert the given clues.
-    fn initialize_puzzle(
-        &mut self,
-        input: &[u8],
-        pencilmark: bool,
-        state: &mut State,
-    ) -> bool {
+    fn initialize_puzzle(&mut self, input: &[u8], pencilmark: bool, state: &mut State) -> bool {
         // For vanilla format, pad short inputs with '.' so we always have 81 bytes.
         let vanilla_buf;
         let vanilla_slice: &[u8] = if !pencilmark {
@@ -774,16 +818,16 @@ impl SolverDpllTriadScc {
             let elem = ((i / 9) % 3) * 4 + (i % 3);
             if pencilmark {
                 for j in 0..9usize {
-                    if input[i * 9 + j] == b'.' {
-                        if !self.assert_lit(lit_not(lit(box_idx, elem, j)), state) {
-                            return false;
-                        }
+                    if input[i * 9 + j] == b'.'
+                        && !self.assert_lit(lit_not(lit(box_idx, elem, j)), state)
+                    {
+                        return false;
                     }
                 }
             } else {
                 let ch = vanilla_slice[i];
                 // Only treat bytes '1'–'9' as clues; anything else is empty.
-                if ch >= b'1' && ch <= b'9' {
+                if (b'1'..=b'9').contains(&ch) {
                     let val = (ch - b'1') as usize;
                     if !self.assert_lit(lit(box_idx, elem, val), state) {
                         return false;
@@ -823,6 +867,7 @@ impl SolverDpllTriadScc {
 
         // Extract the solution string from the result state.
         let mut solution = [0u8; 81];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..81usize {
             let box_idx = i / 27 * 3 + (i % 9) / 3;
             let elem = ((i / 9) % 3) * 4 + (i % 3);

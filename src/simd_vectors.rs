@@ -5,6 +5,12 @@
 //! SIMD solver. On x86_64 with SSSE3/SSE4.1 the hot paths use
 //! `std::arch::x86_64` intrinsics directly; all other targets fall back
 //! to portable scalar code.
+//!
+//! The scalar fallback implementations use explicit indexed loops rather
+//! than iterator combinators to mirror the SIMD lane-indexing pattern and
+//! keep the C++ → Rust translation auditable.
+
+#![allow(clippy::needless_range_loop)]
 
 // ──────────────────────────────────────────────────────────────────────────────
 // cfg_if-style macros for feature-gated x86 dispatch
@@ -115,10 +121,8 @@ impl Bitvec08x16 {
     }
 
     #[inline]
-    pub fn new(
-        x0: u16, x1: u16, x2: u16, x3: u16,
-        x4: u16, x5: u16, x6: u16, x7: u16,
-    ) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(x0: u16, x1: u16, x2: u16, x3: u16, x4: u16, x5: u16, x6: u16, x7: u16) -> Self {
         Self([x0, x1, x2, x3, x4, x5, x6, x7])
     }
 
@@ -146,9 +150,7 @@ impl Bitvec08x16 {
                     _mm_test_all_zeros(v, v) != 0
                 }
             },
-            {
-                self.0.iter().all(|&x| x == 0)
-            }
+            { self.0.iter().all(|&x| x == 0) }
         )
     }
 
@@ -164,9 +166,7 @@ impl Bitvec08x16 {
                     _mm_movemask_epi8(eq) != 0
                 }
             },
-            {
-                self.0.iter().any(|&x| x == 0)
-            }
+            { self.0.contains(&0) }
         )
     }
 
@@ -182,9 +182,7 @@ impl Bitvec08x16 {
                     _mm_movemask_epi8(lt) != 0
                 }
             },
-            {
-                self.0.iter().zip(other.0.iter()).any(|(&a, &b)| a < b)
-            }
+            { self.0.iter().zip(other.0.iter()).any(|(&a, &b)| a < b) }
         )
     }
 
@@ -200,7 +198,10 @@ impl Bitvec08x16 {
                 }
             },
             {
-                self.0.iter().zip(other.0.iter()).any(|(&a, &b)| (a & b) != 0)
+                self.0
+                    .iter()
+                    .zip(other.0.iter())
+                    .any(|(&a, &b)| (a & b) != 0)
             }
         )
     }
@@ -217,7 +218,10 @@ impl Bitvec08x16 {
                 }
             },
             {
-                self.0.iter().zip(other.0.iter()).all(|(&a, &b)| (a & !b) == 0)
+                self.0
+                    .iter()
+                    .zip(other.0.iter())
+                    .all(|(&a, &b)| (a & !b) == 0)
             }
         )
     }
@@ -293,10 +297,7 @@ impl Bitvec08x16 {
                     // cmp: each 64-bit lane is all-1s if > 0, else all-0s
                     let cmp = _mm_cmpgt_epi64(v, zero);
                     // one: 1 in the first non-zero 64-bit half, 0 elsewhere
-                    let one = _mm_andnot_si128(
-                        _mm_slli_si128(cmp, 1),
-                        _mm_srli_epi64(cmp, 63),
-                    );
+                    let one = _mm_andnot_si128(_mm_slli_si128(cmp, 1), _mm_srli_epi64(cmp, 63));
                     store128(_mm_and_si128(v, _mm_sub_epi64(v, one)))
                 }
             },
@@ -312,7 +313,10 @@ impl Bitvec08x16 {
                         (cleared >> 16) as u16,
                         (cleared >> 32) as u16,
                         (cleared >> 48) as u16,
-                        self.0[4], self.0[5], self.0[6], self.0[7],
+                        self.0[4],
+                        self.0[5],
+                        self.0[6],
+                        self.0[7],
                     ])
                 } else {
                     let hi: u64 = (self.0[4] as u64)
@@ -321,7 +325,10 @@ impl Bitvec08x16 {
                         | ((self.0[7] as u64) << 48);
                     let cleared = hi & hi.wrapping_sub(1);
                     Self([
-                        self.0[0], self.0[1], self.0[2], self.0[3],
+                        self.0[0],
+                        self.0[1],
+                        self.0[2],
+                        self.0[3],
                         cleared as u16,
                         (cleared >> 16) as u16,
                         (cleared >> 32) as u16,
@@ -342,10 +349,7 @@ impl Bitvec08x16 {
                     use std::arch::x86_64::*;
                     let v = load128(self);
                     let mask4 = _mm_set1_epi16(0x0f);
-                    let lookup = _mm_setr_epi8(
-                        0, 1, 1, 2, 1, 2, 2, 3,
-                        1, 2, 2, 3, 2, 3, 3, 4,
-                    );
+                    let lookup = _mm_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
                     let lo_nibbles = _mm_and_si128(v, mask4);
                     let hi_nibbles = _mm_srli_epi16(v, 4);
                     let sum_0_3 = _mm_shuffle_epi8(lookup, lo_nibbles);
@@ -414,10 +418,7 @@ impl Bitvec08x16 {
             {
                 unsafe {
                     use std::arch::x86_64::*;
-                    let ctrl = _mm_setr_epi8(
-                        2, 3, 4, 5, 6, 7, 0, 1,
-                        10, 11, 12, 13, 14, 15, 8, 9,
-                    );
+                    let ctrl = _mm_setr_epi8(2, 3, 4, 5, 6, 7, 0, 1, 10, 11, 12, 13, 14, 15, 8, 9);
                     store128(_mm_shuffle_epi8(load128(self), ctrl))
                 }
             },
@@ -568,7 +569,9 @@ impl std::ops::BitOr for Bitvec08x16 {
             },
             {
                 let mut r = [0u16; 8];
-                for i in 0..8 { r[i] = self.0[i] | rhs.0[i]; }
+                for i in 0..8 {
+                    r[i] = self.0[i] | rhs.0[i];
+                }
                 Self(r)
             }
         )
@@ -577,7 +580,9 @@ impl std::ops::BitOr for Bitvec08x16 {
 
 impl std::ops::BitOrAssign for Bitvec08x16 {
     #[inline]
-    fn bitor_assign(&mut self, rhs: Self) { *self = *self | rhs; }
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = *self | rhs;
+    }
 }
 
 impl std::ops::BitAnd for Bitvec08x16 {
@@ -593,7 +598,9 @@ impl std::ops::BitAnd for Bitvec08x16 {
             },
             {
                 let mut r = [0u16; 8];
-                for i in 0..8 { r[i] = self.0[i] & rhs.0[i]; }
+                for i in 0..8 {
+                    r[i] = self.0[i] & rhs.0[i];
+                }
                 Self(r)
             }
         )
@@ -602,7 +609,9 @@ impl std::ops::BitAnd for Bitvec08x16 {
 
 impl std::ops::BitAndAssign for Bitvec08x16 {
     #[inline]
-    fn bitand_assign(&mut self, rhs: Self) { *self = *self & rhs; }
+    fn bitand_assign(&mut self, rhs: Self) {
+        *self = *self & rhs;
+    }
 }
 
 impl std::ops::BitXor for Bitvec08x16 {
@@ -618,7 +627,9 @@ impl std::ops::BitXor for Bitvec08x16 {
             },
             {
                 let mut r = [0u16; 8];
-                for i in 0..8 { r[i] = self.0[i] ^ rhs.0[i]; }
+                for i in 0..8 {
+                    r[i] = self.0[i] ^ rhs.0[i];
+                }
                 Self(r)
             }
         )
@@ -627,7 +638,9 @@ impl std::ops::BitXor for Bitvec08x16 {
 
 impl std::ops::BitXorAssign for Bitvec08x16 {
     #[inline]
-    fn bitxor_assign(&mut self, rhs: Self) { *self = *self ^ rhs; }
+    fn bitxor_assign(&mut self, rhs: Self) {
+        *self = *self ^ rhs;
+    }
 }
 
 impl std::ops::Not for Bitvec08x16 {
@@ -635,7 +648,9 @@ impl std::ops::Not for Bitvec08x16 {
     #[inline]
     fn not(self) -> Self {
         let mut r = [0u16; 8];
-        for i in 0..8 { r[i] = !self.0[i]; }
+        for i in 0..8 {
+            r[i] = !self.0[i];
+        }
         Self(r)
     }
 }
@@ -654,7 +669,10 @@ pub struct Bitvec16x16 {
 
 impl Default for Bitvec16x16 {
     fn default() -> Self {
-        Self { lo: Bitvec08x16::zero(), hi: Bitvec08x16::zero() }
+        Self {
+            lo: Bitvec08x16::zero(),
+            hi: Bitvec08x16::zero(),
+        }
     }
 }
 
@@ -668,7 +686,10 @@ impl Bitvec16x16 {
 
     #[inline]
     pub fn all(value: u16) -> Self {
-        Self { lo: Bitvec08x16::all(value), hi: Bitvec08x16::all(value) }
+        Self {
+            lo: Bitvec08x16::all(value),
+            hi: Bitvec08x16::all(value),
+        }
     }
 
     #[inline]
@@ -679,10 +700,22 @@ impl Bitvec16x16 {
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn new(
-        x00: u16, x01: u16, x02: u16, x03: u16,
-        x04: u16, x05: u16, x06: u16, x07: u16,
-        x08: u16, x09: u16, x10: u16, x11: u16,
-        x12: u16, x13: u16, x14: u16, x15: u16,
+        x00: u16,
+        x01: u16,
+        x02: u16,
+        x03: u16,
+        x04: u16,
+        x05: u16,
+        x06: u16,
+        x07: u16,
+        x08: u16,
+        x09: u16,
+        x10: u16,
+        x11: u16,
+        x12: u16,
+        x13: u16,
+        x14: u16,
+        x15: u16,
     ) -> Self {
         Self {
             lo: Bitvec08x16::new(x00, x01, x02, x03, x04, x05, x06, x07),
@@ -692,70 +725,105 @@ impl Bitvec16x16 {
 
     // ── half accessors ────────────────────────────────────────────────────────
 
-    #[inline] pub fn get_lo(&self) -> Bitvec08x16 { self.lo }
-    #[inline] pub fn get_hi(&self) -> Bitvec08x16 { self.hi }
+    #[inline]
+    pub fn get_lo(&self) -> Bitvec08x16 {
+        self.lo
+    }
+    #[inline]
+    pub fn get_hi(&self) -> Bitvec08x16 {
+        self.hi
+    }
 
     // ── element access ───────────────────────────────────────────────────────
 
     #[inline]
     pub fn extract(&self, index: usize) -> u16 {
-        if index < 8 { self.lo.extract(index) } else { self.hi.extract(index - 8) }
+        if index < 8 {
+            self.lo.extract(index)
+        } else {
+            self.hi.extract(index - 8)
+        }
     }
 
     #[inline]
     pub fn insert(&mut self, index: usize, value: u16) {
-        if index < 8 { self.lo.insert(index, value); } else { self.hi.insert(index - 8, value); }
+        if index < 8 {
+            self.lo.insert(index, value);
+        } else {
+            self.hi.insert(index - 8, value);
+        }
     }
 
     // ── boolean predicates ───────────────────────────────────────────────────
 
-    #[inline] pub fn all_zero(&self)  -> bool { self.lo.all_zero()  && self.hi.all_zero() }
-    #[inline] pub fn any_zero(&self)  -> bool { self.lo.any_zero()  || self.hi.any_zero() }
-    #[inline] pub fn intersects(&self, other: &Self) -> bool {
+    #[inline]
+    pub fn all_zero(&self) -> bool {
+        self.lo.all_zero() && self.hi.all_zero()
+    }
+    #[inline]
+    pub fn any_zero(&self) -> bool {
+        self.lo.any_zero() || self.hi.any_zero()
+    }
+    #[inline]
+    pub fn intersects(&self, other: &Self) -> bool {
         self.lo.intersects(&other.lo) || self.hi.intersects(&other.hi)
     }
-    #[inline] pub fn subset_of(&self, other: &Self) -> bool {
+    #[inline]
+    pub fn subset_of(&self, other: &Self) -> bool {
         self.lo.subset_of(&other.lo) && self.hi.subset_of(&other.hi)
     }
-    #[inline] pub fn any_less_than(&self, other: &Self) -> bool {
+    #[inline]
+    pub fn any_less_than(&self, other: &Self) -> bool {
         self.lo.any_less_than(&other.lo) || self.hi.any_less_than(&other.hi)
     }
 
     // ── lane-wise comparison ──────────────────────────────────────────────────
 
-    #[inline] pub fn which_equal(&self, other: &Self) -> Self {
-        Self::from_halves(self.lo.which_equal(&other.lo), self.hi.which_equal(&other.hi))
+    #[inline]
+    pub fn which_equal(&self, other: &Self) -> Self {
+        Self::from_halves(
+            self.lo.which_equal(&other.lo),
+            self.hi.which_equal(&other.hi),
+        )
     }
-    #[inline] pub fn which_non_zero(&self) -> Self {
+    #[inline]
+    pub fn which_non_zero(&self) -> Self {
         Self::from_halves(self.lo.which_non_zero(), self.hi.which_non_zero())
     }
 
     // ── bit manipulation ─────────────────────────────────────────────────────
 
-    #[inline] pub fn get_low_bit(&self) -> Self {
+    #[inline]
+    pub fn get_low_bit(&self) -> Self {
         Self::from_halves(self.lo.get_low_bit(), self.hi.get_low_bit())
     }
-    #[inline] pub fn clear_low_bit(&self) -> Self {
+    #[inline]
+    pub fn clear_low_bit(&self) -> Self {
         Self::from_halves(self.lo.clear_low_bit(), self.hi.clear_low_bit())
     }
-    #[inline] pub fn popcounts9(&self) -> Self {
+    #[inline]
+    pub fn popcounts9(&self) -> Self {
         Self::from_halves(self.lo.popcounts9(), self.hi.popcounts9())
     }
-    #[inline] pub fn popcount(&self) -> u32 {
+    #[inline]
+    pub fn popcount(&self) -> u32 {
         self.lo.popcount() + self.hi.popcount()
     }
 
     // ── shuffle / rotate ──────────────────────────────────────────────────────
 
-    #[inline] pub fn shuffle(&self, control: &Self) -> Self {
+    #[inline]
+    pub fn shuffle(&self, control: &Self) -> Self {
         Self::from_halves(self.lo.shuffle(&control.lo), self.hi.shuffle(&control.hi))
     }
 
-    #[inline] pub fn rotate_rows(&self) -> Self {
+    #[inline]
+    pub fn rotate_rows(&self) -> Self {
         Self::from_halves(self.lo.rotate_rows(), self.hi.rotate_rows())
     }
 
-    #[inline] pub fn rotate_rows2(&self) -> Self {
+    #[inline]
+    pub fn rotate_rows2(&self) -> Self {
         Self::from_halves(self.lo.rotate_rows2(), self.hi.rotate_rows2())
     }
 
@@ -788,7 +856,8 @@ impl Bitvec16x16 {
         )
     }
 
-    #[inline] pub fn rotate_cols2(&self) -> Self {
+    #[inline]
+    pub fn rotate_cols2(&self) -> Self {
         Self::from_halves(self.hi, self.lo)
     }
 
@@ -803,25 +872,29 @@ impl Bitvec16x16 {
 
     // ── ternary helpers ───────────────────────────────────────────────────────
 
-    #[inline] pub fn x_y_and_z_or(x: &Self, y: &Self, z: &Self) -> Self {
+    #[inline]
+    pub fn x_y_and_z_or(x: &Self, y: &Self, z: &Self) -> Self {
         Self::from_halves(
             Bitvec08x16::x_y_and_z_or(&x.lo, &y.lo, &z.lo),
             Bitvec08x16::x_y_and_z_or(&x.hi, &y.hi, &z.hi),
         )
     }
-    #[inline] pub fn x_y_andnot_z_or(x: &Self, y: &Self, z: &Self) -> Self {
+    #[inline]
+    pub fn x_y_andnot_z_or(x: &Self, y: &Self, z: &Self) -> Self {
         Self::from_halves(
             Bitvec08x16::x_y_andnot_z_or(&x.lo, &y.lo, &z.lo),
             Bitvec08x16::x_y_andnot_z_or(&x.hi, &y.hi, &z.hi),
         )
     }
-    #[inline] pub fn x_y_or_z_or(x: &Self, y: &Self, z: &Self) -> Self {
+    #[inline]
+    pub fn x_y_or_z_or(x: &Self, y: &Self, z: &Self) -> Self {
         Self::from_halves(
             Bitvec08x16::x_y_or_z_or(&x.lo, &y.lo, &z.lo),
             Bitvec08x16::x_y_or_z_or(&x.hi, &y.hi, &z.hi),
         )
     }
-    #[inline] pub fn x_y_xor_z_or(x: &Self, y: &Self, z: &Self) -> Self {
+    #[inline]
+    pub fn x_y_xor_z_or(x: &Self, y: &Self, z: &Self) -> Self {
         Self::from_halves(
             Bitvec08x16::x_y_xor_z_or(&x.lo, &y.lo, &z.lo),
             Bitvec08x16::x_y_xor_z_or(&x.hi, &y.hi, &z.hi),
@@ -829,7 +902,8 @@ impl Bitvec16x16 {
     }
 
     /// `self & !other`
-    #[inline] pub fn and_not(&self, other: &Self) -> Self {
+    #[inline]
+    pub fn and_not(&self, other: &Self) -> Self {
         Self::from_halves(self.lo.and_not(&other.lo), self.hi.and_not(&other.hi))
     }
 }
@@ -844,7 +918,10 @@ impl std::ops::BitOr for Bitvec16x16 {
     }
 }
 impl std::ops::BitOrAssign for Bitvec16x16 {
-    #[inline] fn bitor_assign(&mut self, rhs: Self) { *self = *self | rhs; }
+    #[inline]
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = *self | rhs;
+    }
 }
 impl std::ops::BitAnd for Bitvec16x16 {
     type Output = Self;
@@ -854,7 +931,10 @@ impl std::ops::BitAnd for Bitvec16x16 {
     }
 }
 impl std::ops::BitAndAssign for Bitvec16x16 {
-    #[inline] fn bitand_assign(&mut self, rhs: Self) { *self = *self & rhs; }
+    #[inline]
+    fn bitand_assign(&mut self, rhs: Self) {
+        *self = *self & rhs;
+    }
 }
 impl std::ops::BitXor for Bitvec16x16 {
     type Output = Self;
@@ -864,11 +944,15 @@ impl std::ops::BitXor for Bitvec16x16 {
     }
 }
 impl std::ops::BitXorAssign for Bitvec16x16 {
-    #[inline] fn bitxor_assign(&mut self, rhs: Self) { *self = *self ^ rhs; }
+    #[inline]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        *self = *self ^ rhs;
+    }
 }
 impl std::ops::Not for Bitvec16x16 {
     type Output = Self;
-    #[inline] fn not(self) -> Self {
+    #[inline]
+    fn not(self) -> Self {
         Self::from_halves(!self.lo, !self.hi)
     }
 }
@@ -893,7 +977,9 @@ pub fn which_dots_16(data: &[u8]) -> u32 {
         {
             let mut mask = 0u32;
             for i in 0..16 {
-                if data[i] == b'.' { mask |= 1 << i; }
+                if data[i] == b'.' {
+                    mask |= 1 << i;
+                }
             }
             mask
         }
@@ -941,7 +1027,7 @@ fn lanes_to_bytes(v: &Bitvec08x16) -> [u8; 16] {
     let mut b = [0u8; 16];
     for i in 0..8 {
         let lane = v.0[i];
-        b[2 * i]     = (lane & 0xff) as u8;
+        b[2 * i] = (lane & 0xff) as u8;
         b[2 * i + 1] = (lane >> 8) as u8;
     }
     b
@@ -964,8 +1050,12 @@ fn bytes_to_lanes(b: &[u8; 16]) -> Bitvec08x16 {
 mod tests {
     use super::*;
 
-    fn v8(x: u16) -> Bitvec08x16 { Bitvec08x16::all(x) }
-    fn v16(x: u16) -> Bitvec16x16 { Bitvec16x16::all(x) }
+    fn v8(x: u16) -> Bitvec08x16 {
+        Bitvec08x16::all(x)
+    }
+    fn v16(x: u16) -> Bitvec16x16 {
+        Bitvec16x16::all(x)
+    }
 
     #[test]
     fn test_all_zero() {
@@ -1006,8 +1096,9 @@ mod tests {
         // all(0b1100): low 64-bit = 0x000C_000C_000C_000C
         // clear lowest bit → 0x000C_000C_000C_0008 (only lane 0 changes)
         let a = Bitvec08x16::all(0b1100);
-        let expected = Bitvec08x16::new(0b1000, 0b1100, 0b1100, 0b1100,
-                                        0b1100, 0b1100, 0b1100, 0b1100);
+        let expected = Bitvec08x16::new(
+            0b1000, 0b1100, 0b1100, 0b1100, 0b1100, 0b1100, 0b1100, 0b1100,
+        );
         assert_eq!(a.clear_low_bit(), expected);
 
         // If only the high half is non-zero, it operates on that half.
@@ -1039,10 +1130,14 @@ mod tests {
     fn test_shuffle_identity() {
         // control = byte indices [0,1, 2,3, 4,5, 6,7, 8,9, 10,11, 12,13, 14,15]
         // means "keep lane i in place"
-        let ctrl = Bitvec08x16::new(0x0100, 0x0302, 0x0504, 0x0706, 0x0900, 0x0b0a, 0x0d0c, 0x0f0e);
+        let ctrl = Bitvec08x16::new(
+            0x0100, 0x0302, 0x0504, 0x0706, 0x0900, 0x0b0a, 0x0d0c, 0x0f0e,
+        );
         // Actually let's just test that shuffle of all-same gives all-same.
         let src = v8(0x1234);
-        let ctrl_same = Bitvec08x16::new(0x0100, 0x0100, 0x0100, 0x0100, 0x0100, 0x0100, 0x0100, 0x0100);
+        let ctrl_same = Bitvec08x16::new(
+            0x0100, 0x0100, 0x0100, 0x0100, 0x0100, 0x0100, 0x0100, 0x0100,
+        );
         let result = src.shuffle(&ctrl_same);
         // All lanes select bytes 0,1 (lane 0 = 0x1234) → all lanes become 0x1234
         assert_eq!(result, v8(0x1234));

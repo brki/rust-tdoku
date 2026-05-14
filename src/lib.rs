@@ -11,8 +11,6 @@
 //! - [`solver_dpll_triad_scc`] — DPLL with triad + SCC heuristics
 //! - [`solver_dpll_triad_simd`] — DPLL with triads, SIMD constraint propagation (fastest)
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
 pub mod bitutil;
 pub mod grid_lib;
 pub mod simd_vectors;
@@ -60,9 +58,8 @@ pub fn enumerate(puzzle: &str, limit: usize, mut callback: impl FnMut(&str)) -> 
 pub fn constrain(pencilmark: bool, puzzle: &mut String) -> bool {
     let mut bytes = puzzle.as_bytes().to_vec();
     let result = GENERATOR.with(|g| g.borrow_mut().constrain(pencilmark, &mut bytes));
-    *puzzle = String::from_utf8(bytes).unwrap_or_else(|e| {
-        String::from_utf8_lossy(e.as_bytes()).into_owned()
-    });
+    *puzzle = String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     result
 }
 
@@ -74,9 +71,8 @@ pub fn constrain(pencilmark: bool, puzzle: &mut String) -> bool {
 pub fn minimize(pencilmark: bool, monotonic: bool, puzzle: &mut String) -> bool {
     let mut bytes = puzzle.as_bytes().to_vec();
     let result = GENERATOR.with(|g| g.borrow_mut().minimize(pencilmark, monotonic, &mut bytes));
-    *puzzle = String::from_utf8(bytes).unwrap_or_else(|e| {
-        String::from_utf8_lossy(e.as_bytes()).into_owned()
-    });
+    *puzzle = String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     result
 }
 
