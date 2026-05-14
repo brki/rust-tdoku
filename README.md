@@ -132,7 +132,7 @@ generate -p 0 -l 50 my_puzzles.txt
 cargo build --release
 ```
 
-To use the repo after cloning, initialize the tdoku submodule first:
+To run the [comparison tests](#comparison-tests) (Docker-based C++/Rust trace comparison), initialize the tdoku submodule first:
 
 ```sh
 git submodule update --init

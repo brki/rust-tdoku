@@ -21,9 +21,7 @@ struct TestCase {
 }
 
 fn test_puzzles_path() -> PathBuf {
-    // This crate lives at rdoku/, so CARGO_MANIFEST_DIR is rdoku/.
-    // The test file is at tdoku/test/test_puzzles relative to the repo root.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tdoku/test/test_puzzles")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test_puzzles")
 }
 
 fn load_test_cases() -> Vec<TestCase> {

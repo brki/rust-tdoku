@@ -492,7 +492,7 @@ fn test_sparse_puzzle_limited_stack() {
 #[test]
 fn test_all_solvers_agree() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tdoku/test/test_puzzles");
+        .join("tests/test_puzzles");
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return, // skip if test data unavailable
