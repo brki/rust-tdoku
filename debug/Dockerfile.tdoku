@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# Dockerfile for C++ tdoku debug solver on amd64 Linux.
+#
+# Source is bind-mounted at /tdoku at runtime (docker-compose or compare.sh).
+# COPY . . also provides source for standalone image use (no volumes).
+# The compiled binary lives in the named volume /build and is only rebuilt
+# when source files are newer than the binary (incremental-safe).
+#
+# Build context: tdoku/ directory.
+FROM --platform=linux/amd64 ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        g++ ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tdoku
+# COPY provides source for standalone use; bind-mount /tdoku to use live source.
+COPY . .
+RUN mkdir -p /build
+
+# Entrypoint: rebuild only when source is newer than binary, then exec.
+COPY <<'EOF' /entrypoint.sh
+#!/bin/sh
+set -e
+mkdir -p /build
+BINARY=/build/tdoku-debug
+if [ ! -f "$BINARY" ] \
+   || [ /tdoku/src/solver_dpll_triad_simd.cc -nt "$BINARY" ] \
+   || [ /tdoku/src/util.cc -nt "$BINARY" ] \
+   || [ /tdoku/src/debug_driver.cc -nt "$BINARY" ]; then
+  echo "[tdoku-debug] (re)building..." >&2
+  g++ -std=c++14 -O2 -DDEBUG_TRACE -msse4.2 \
+      -I /tdoku/src -I /tdoku/include \
+      /tdoku/src/solver_dpll_triad_simd.cc \
+      /tdoku/src/util.cc \
+      /tdoku/src/debug_driver.cc \
+      -o "$BINARY"
+fi
+exec "$BINARY" "$@"
+EOF
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

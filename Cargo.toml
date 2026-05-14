@@ -1,0 +1,37 @@
+[package]
+name = "rdoku"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+
+[features]
+debug-trace = []
+
+[lib]
+name = "rdoku"
+path = "src/lib.rs"
+
+[[bin]]
+name = "solve"
+path = "src/bin/solve.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
+
+[[bin]]
+name = "debug_solver"
+path = "src/bin/debug_solver.rs"
+
+[dependencies]
+wide = "1"
+rand = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

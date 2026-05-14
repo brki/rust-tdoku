@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+# Dockerfile for Rust rdoku debug solver on amd64 Linux.
+#
+# Source must be bind-mounted at /rdoku at runtime.
+# Named volumes provide build caching:
+#   rdoku-target  -> /rdoku/target       (compiled artifacts)
+#   cargo-registry -> /usr/local/cargo/registry  (downloaded crates)
+#
+# Build context: repo root.
+FROM --platform=linux/amd64 rust:latest
+
+WORKDIR /rdoku
+
+# Entrypoint: cargo build is incremental via the named volume cache.
+COPY <<'EOF' /entrypoint.sh
+#!/bin/sh
+set -e
+cd /rdoku
+cargo build --release --features debug-trace --bin debug_solver
+exec /rdoku/target/release/debug_solver "$@"
+EOF
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

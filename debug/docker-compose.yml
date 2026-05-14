@@ -1,0 +1,56 @@
+# docker-compose.yml — runs tdoku (C++) and rdoku (Rust) debug solvers on the
+# same puzzle and captures their DT: trace output for comparison.
+#
+# Usage (from the repo root):
+#   PUZZLE=".5..83.17..." docker compose -f debug/docker-compose.yml run --rm tdoku
+#   PUZZLE=".5..83.17..." docker compose -f debug/docker-compose.yml run --rm rdoku
+#
+# Or use the helper script: debug/compare.sh [puzzle] [limit]
+#
+# Volume strategy (reduces compilation time):
+#   - Source is bind-mounted so image rebuilds are not needed after code changes.
+#   - tdoku-build  : named volume caching the compiled C++ binary (/build)
+#   - rdoku-target : named volume caching Rust build artifacts (/rdoku/target)
+#   - cargo-registry : named volume caching downloaded crates
+#
+# The PUZZLE variable can be an 81-char vanilla or 729-char pencilmark string.
+# LIMIT controls max solutions to count (default: 2).
+
+services:
+  tdoku:
+    build:
+      context: ../tdoku           # build context = tdoku/ submodule
+      dockerfile: ../debug/Dockerfile.tdoku
+    image: tdoku-debug
+    platform: linux/amd64
+    volumes:
+      - type: bind
+        source: ../tdoku          # live C++ source (relative to this compose file)
+        target: /tdoku
+      - tdoku-build:/build        # compiled binary cache
+    environment:
+      - PUZZLE=${PUZZLE:-.5..83.17...1..4..3.4..56.8....3...9.9.8245....6....7...9....5...729..861.36.72.4}
+      - LIMIT=${LIMIT:-2}
+    command: ["sh", "-c", "/entrypoint.sh \"$$PUZZLE\" $$LIMIT"]
+
+  rdoku:
+    build:
+      context: ..                 # build context = repo root
+      dockerfile: debug/Dockerfile.rdoku
+    image: rdoku-debug
+    platform: linux/amd64
+    volumes:
+      - type: bind
+        source: ..                # live Rust source = repo root (relative to this compose file)
+        target: /rdoku
+      - rdoku-target:/rdoku/target           # Rust build artifacts
+      - cargo-registry:/usr/local/cargo/registry  # downloaded crates
+    environment:
+      - PUZZLE=${PUZZLE:-.5..83.17...1..4..3.4..56.8....3...9.9.8245....6....7...9....5...729..861.36.72.4}
+      - LIMIT=${LIMIT:-2}
+    command: ["sh", "-c", "/entrypoint.sh \"$$PUZZLE\" $$LIMIT"]
+
+volumes:
+  tdoku-build:
+  rdoku-target:
+  cargo-registry:
