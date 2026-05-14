@@ -11,8 +11,10 @@ Cargo.lock
 *~
 .DS_Store
 
-# Test data (symlinked/referenced from submodule)
-test_puzzles
+# Test data in submodule (not committed; sourced from tdoku submodule)
+tdoku/test/test_puzzles
+# But the copy in tests/ is committed and must not be ignored
+!tests/test_puzzles
 
 # Generated files
 *.o
