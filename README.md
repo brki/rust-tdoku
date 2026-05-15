@@ -2,7 +2,7 @@
 
 A Rust port of [tdoku](https://github.com/t-dillon/tdoku) — a high-performance Sudoku solver and generator.
 
-⚠️ Notice ⚠️ This is an AI-assist ported project. I haven't touched C++ code in 27 years.
+⚠️ Notice ⚠️ This is an AI-assist ported project.
 
 Why? tdoku doesn't run on arm64 architecture, rust-tdoku does.
 
