@@ -4,7 +4,7 @@ A Rust port of [tdoku](https://github.com/t-dillon/tdoku) — a high-performance
 
 ⚠️ Notice ⚠️ This is an AI-assist ported project.
 
-Why? tdoku doesn't run on arm64 architecture, rust-tdoku does.
+Why? tdoku doesn't run on arm64 architecture, rust-tdoku runs on both amd64 and arm64.
 
 Code quality and correctness efforts were made, including checking that Sudoku solving and generating
 work equivalently to the original tdoku project.
