@@ -11,7 +11,7 @@ work equivalently to the original tdoku project.
 
 ## Overview
 
-rdoku provides three solver implementations ported from tdoku's C++ source, along with a puzzle generator and benchmark runner:
+The `rdoku` crate provides three solver implementations ported from tdoku's C++ source, along with a puzzle generator and benchmark runner:
 
 | Solver | Description |
 |--------|-------------|
@@ -189,6 +189,9 @@ debug/compare.sh [puzzle] [limit]
 ```
 .
 ├── Cargo.toml
+├── Cargo.lock                      # Gitignored (binary crate convention)
+├── LICENSE.md
+├── README.md
 ├── src/
 │   ├── lib.rs                      # Public API + module declarations
 │   ├── bitutil.rs                  # Bit manipulation utilities
@@ -200,13 +203,26 @@ debug/compare.sh [puzzle] [limit]
 │   ├── grid_lib.rs                 # Grid enumeration utilities
 │   └── bin/
 │       ├── benchmark.rs            # Benchmark runner
-│       ├── generate.rs             # Puzzle generator
-│       ├── solve.rs                # Solver CLI (read puzzles, output solutions)
-│       └── debug_solver.rs         # Debug solver (used for Phase 13 trace comparison)
+│       ├── debug_solver.rs         # Debug solver (used for trace comparison)
+│       ├── generate.rs             # Puzzle generator (hill-climbing pool)
+│       ├── generate_verify.rs      # Generate + verify unique-solution puzzles (used for testing)
+│       └── solve.rs                # Solver CLI (read puzzles, output solutions)
 ├── tests/
 │   ├── integration.rs              # Correctness tests against tdoku test data
 │   ├── edge_cases.rs               # Edge case and resource-safety tests
-│   └── comparison.rs               # Phase 13: Docker-based C++/Rust trace comparison
+│   ├── comparison.rs               # Docker-based C++/Rust trace comparison
+│   ├── property_tests.rs           # Proptest property-based tests
+│   └── test_puzzles                # Committed copy of the test puzzle corpus
+├── benches/
+│   └── solver_bench.rs             # Criterion benchmarks for all solvers
+├── fuzz/
+│   ├── Cargo.toml                  # Separate crate for libfuzzer-based fuzzing
+│   └── fuzz_targets/
+│       ├── solve_fuzz.rs           # Fuzz target: solve arbitrary inputs
+│       └── generator_fuzz.rs       # Fuzz target: generate + verify puzzles
+├── scripts/
+│   ├── bench.sh                    # Run benchmarks and save results
+│   └── test.sh                     # Run test suite with common configurations
 ├── debug/
 │   ├── Dockerfile.tdoku            # Docker image for C++ tdoku debug solver
 │   ├── Dockerfile.rdoku            # Docker image for Rust rdoku debug solver
