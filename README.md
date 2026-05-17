@@ -148,6 +148,30 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 ## Testing
 
+A task runner ([`just`](https://github.com/casey/just)) orchestrates formatting, linting, tests, fuzzing, and benchmarks:
+
+```sh
+# Default pre-commit suite: fmt + clippy + tests
+just validate
+
+# Individual checks
+just format           # cargo fmt --check
+just lint             # cargo clippy
+just test-unit        # unit tests
+just test-integration # integration tests
+
+# Custom commands
+just all                             # run everything
+just fuzz 60                         # fuzz targets (60s each)
+just comparison                      # Docker comparison tests
+just generated 1000                  # verify 1000 generated puzzles
+just bench                           # criterion + legacy benchmarks
+```
+
+See `just --list` for all available recipes.
+
+Individual test commands are also available:
+
 Integration tests read `tdoku/test/test_puzzles` and verify all three solvers produce correct solution counts and solution strings:
 
 ```sh
@@ -189,7 +213,7 @@ debug/compare.sh [puzzle] [limit]
 ```
 .
 ├── Cargo.toml
-├── Cargo.lock                      # Gitignored (binary crate convention)
+├── Cargo.lock                      # Pinned dependency versions
 ├── LICENSE.md
 ├── README.md
 ├── src/
@@ -220,9 +244,7 @@ debug/compare.sh [puzzle] [limit]
 │   └── fuzz_targets/
 │       ├── solve_fuzz.rs           # Fuzz target: solve arbitrary inputs
 │       └── generator_fuzz.rs       # Fuzz target: generate + verify puzzles
-├── scripts/
-│   ├── bench.sh                    # Run benchmarks and save results
-│   └── test.sh                     # Run test suite with common configurations
+├── justfile                        # Task runner (just validate, just bench, …)
 ├── debug/
 │   ├── Dockerfile.tdoku            # Docker image for C++ tdoku debug solver
 │   ├── Dockerfile.rdoku            # Docker image for Rust rdoku debug solver

@@ -1065,10 +1065,8 @@ impl GeneratorDpllTriadSimd {
                 if puzzle[literal] == b'.' {
                     continue;
                 }
-            } else {
-                if cell >= 81 || puzzle[cell] != b'.' {
-                    continue;
-                }
+            } else if cell >= 81 || puzzle[cell] != b'.' {
+                continue;
             }
 
             let _t = tables();
@@ -1127,10 +1125,8 @@ impl GeneratorDpllTriadSimd {
                 if puzzle[cell_or_literal] != b'.' {
                     continue;
                 }
-            } else {
-                if cell_or_literal >= 81 || puzzle[cell_or_literal] == b'.' {
-                    continue;
-                }
+            } else if cell_or_literal >= 81 || puzzle[cell_or_literal] == b'.' {
+                continue;
             }
             let constraint = puzzle[cell_or_literal];
             let mut state = State::default();

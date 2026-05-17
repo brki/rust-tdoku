@@ -1,0 +1,6 @@
+[files]
+extend-exclude = ["tdoku/", "target/", "fuzz/target/"]
+
+[default]
+extend-words = { lits = "lits" }
+

@@ -4,6 +4,9 @@ version = "0.0.0"
 publish = false
 edition = "2021"
 
+# Prevent this from being a workspace member
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 
@@ -13,7 +16,6 @@ libfuzzer-sys = "0.4"
 [dependencies.rdoku]
 path = ".."
 
-# Prevent this from being a workspace member
 [[bin]]
 name = "solve_fuzz"
 path = "fuzz_targets/solve_fuzz.rs"
