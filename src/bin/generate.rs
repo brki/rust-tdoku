@@ -145,6 +145,7 @@ impl Generator {
         };
         let puzzle_size = if self.options.pencilmark { 729 } else { 81 };
         let reader = std::io::BufReader::new(file);
+        let mut skipped_invalid = 0usize;
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -157,6 +158,12 @@ impl Generator {
             if puzzle.len() < puzzle_size {
                 continue;
             }
+            // Quick structural check: skip puzzles with duplicate digits in a
+            // row, column, or box before feeding them to the solver.
+            if !self.is_valid_puzzle(puzzle.as_bytes()) {
+                skipped_invalid += 1;
+                continue;
+            }
             let (_, _, loss) = self.evaluate(puzzle.as_bytes());
             self.pool.push(PoolEntry {
                 loss,
@@ -164,9 +171,89 @@ impl Generator {
             });
             self.pool_set.insert(puzzle);
         }
+        if skipped_invalid > 0 {
+            eprintln!(
+                "skipped {} invalid puzzle{} (duplicate digit in row, column, or box)",
+                skipped_invalid,
+                if skipped_invalid == 1 { "" } else { "s" }
+            );
+        }
+    }
+
+    /// Quick structural check: reject puzzles with duplicate digits in any
+    /// row, column, or 3×3 box.  The full solver also catches these, but it
+    /// may spend a long time exploring dead ends first — this fast filter
+    /// prevents that.
+    fn is_valid_puzzle(&self, puzzle: &[u8]) -> bool {
+        if self.options.pencilmark {
+            // For pencilmark (729 chars), a quick row/col/box duplicate check
+            // is less meaningful because a cell may have multiple candidates.
+            // Rely on the solver's own validation.
+            return true;
+        }
+        // Vanilla format (81 chars): each cell is a digit '1'..'9' or '.'
+        if puzzle.len() < 81 {
+            return false;
+        }
+
+        // Check each row for duplicate digits
+        for row in 0..9 {
+            let mut seen = 0u16;
+            for col in 0..9 {
+                let c = puzzle[row * 9 + col];
+                if c != b'.' {
+                    let bit = 1u16 << (c - b'1');
+                    if seen & bit != 0 {
+                        return false; // duplicate digit in row
+                    }
+                    seen |= bit;
+                }
+            }
+        }
+
+        // Check each column for duplicate digits
+        for col in 0..9 {
+            let mut seen = 0u16;
+            for row in 0..9 {
+                let c = puzzle[row * 9 + col];
+                if c != b'.' {
+                    let bit = 1u16 << (c - b'1');
+                    if seen & bit != 0 {
+                        return false; // duplicate digit in column
+                    }
+                    seen |= bit;
+                }
+            }
+        }
+
+        // Check each 3×3 box for duplicate digits
+        for box_row in 0..3 {
+            for box_col in 0..3 {
+                let mut seen = 0u16;
+                for r in 0..3 {
+                    for c in 0..3 {
+                        let idx = (box_row * 3 + r) * 9 + (box_col * 3 + c);
+                        let ch = puzzle[idx];
+                        if ch != b'.' {
+                            let bit = 1u16 << (ch - b'1');
+                            if seen & bit != 0 {
+                                return false; // duplicate digit in box
+                            }
+                            seen |= bit;
+                        }
+                    }
+                }
+            }
+        }
+
+        true
     }
 
     fn has_unique_solution(&self, puzzle: &[u8]) -> bool {
+        // Fast structural validity check first
+        if !self.is_valid_puzzle(puzzle) {
+            return false;
+        }
         let input = match std::str::from_utf8(puzzle) {
             Ok(s) => s,
             Err(_) => return false,
@@ -1053,5 +1140,78 @@ mod tests {
         g.generate();
         assert_eq!(g.printed, 1);
         assert_eq!(g.pool.len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // is_valid_puzzle
+    // ------------------------------------------------------------------
+
+    fn make_vanilla_generator() -> Generator {
+        Generator::new(Options {
+            pencilmark: false,
+            ..Options::default()
+        })
+    }
+
+    #[test]
+    fn valid_empty_puzzle() {
+        let g = make_vanilla_generator();
+        assert!(g.is_valid_puzzle(
+            b"................................................................................."
+        ));
+    }
+
+    #[test]
+    fn valid_partial_puzzle() {
+        let g = make_vanilla_generator();
+        // A valid partially-filled puzzle (no duplicates per row/col/box)
+        let puzzle =
+            b"53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79";
+        assert!(g.is_valid_puzzle(puzzle));
+    }
+
+    #[test]
+    fn invalid_duplicate_in_row() {
+        let g = make_vanilla_generator();
+        // Two 1's in the first row at positions 0 and 2
+        let puzzle =
+            b"1.11111..........................................................................";
+        assert!(!g.is_valid_puzzle(puzzle));
+    }
+
+    #[test]
+    fn invalid_duplicate_in_column() {
+        let g = make_vanilla_generator();
+        // Two 1's in column 0 (cells 0 and 9)
+        let puzzle =
+            b"1........1.......................................................................";
+        assert!(!g.is_valid_puzzle(puzzle));
+    }
+
+    #[test]
+    fn invalid_duplicate_in_box() {
+        let g = make_vanilla_generator();
+        // Two 1's in box 0: cell 0 and cell 10 (row 1, col 1)
+        let puzzle =
+            b"1.........1......................................................................";
+        assert!(!g.is_valid_puzzle(puzzle));
+    }
+
+    #[test]
+    fn valid_complete_solution() {
+        let g = make_vanilla_generator();
+        let puzzle =
+            b"534678912672195348198342567859761423426853791713924856961537284287419635345286179";
+        assert!(g.is_valid_puzzle(puzzle));
+    }
+
+    #[test]
+    fn invalid_duplicate_in_row_8() {
+        let g = make_vanilla_generator();
+        // Two 9's at the end of row 8 (cells 79 and 80)
+        let mut puzzle = [b'.'; 81];
+        puzzle[79] = b'9';
+        puzzle[80] = b'9';
+        assert!(!g.is_valid_puzzle(&puzzle));
     }
 }
