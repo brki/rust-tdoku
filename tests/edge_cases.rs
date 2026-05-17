@@ -294,8 +294,9 @@ fn test_short_input_simd_no_panic() {
 #[test]
 fn test_short_input_public_api_no_panic() {
     let s = std::str::from_utf8(SHORT_PUZZLE_BYTES).unwrap();
+    // Public API now validates length: non-81/729 inputs are rejected.
     let (count, _, _) = rdoku::solve_sudoku(s, 1, 0);
-    assert!(count >= 1);
+    assert_eq!(count, 0);
 }
 
 /// Zero-length input — treated as a fully empty puzzle (many solutions).

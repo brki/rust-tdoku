@@ -4,7 +4,8 @@
 #   just              → list all recipes
 #   just validate     → format + clippy + tests
 #   just all          → full CI suite
-#   just fuzz 60      → fuzz for 60s per target
+#   just fuzz 60      → fuzz all targets for 60s each
+#   just fuzz-one solve_fuzz 120 true  → fuzz single target
 #
 # Install: brew install just   or   cargo install just
 
@@ -89,78 +90,58 @@ default:
 # Fuzz solver & generator (requires cargo-fuzz + nightly).
 fuzz timeout="30" verbose="":
     #!/usr/bin/env bash
-    # Usage: just fuzz [timeout_seconds] [verbose=1]
-    #
-    # A wall-clock timeout caps the run in addition to libFuzzer's
-    # -max_total_time, because -max_total_time only counts time inside the
-    # harness — a single slow puzzle can stall fuzzing indefinitely.
+    set -euo pipefail
+    failed=0
+    for target in solve_fuzz generator_fuzz; do
+        just fuzz-one "$target" "{{timeout}}" "{{verbose}}" || failed=1
+    done
+    exit $failed
+
+# Fuzz a single target (requires cargo-fuzz + nightly + GNU timeout).
+# Install GNU timeout on macOS:  brew install coreutils
+# Usage: just fuzz-one solve_fuzz [timeout_seconds] [verbose=1]
+fuzz-one target timeout="30" verbose="":
+    #!/usr/bin/env bash
     set -euo pipefail
 
-    # ── helpers ──────────────────────────────────────────────────────────
     red()    { echo -e "\033[0;31m$*\033[0m"; }
     green()  { echo -e "\033[0;32m$*\033[0m"; }
     yellow() { echo -e "\033[0;33m$*\033[0m"; }
 
-    # Run a command with a wall-clock timeout.  On timeout the command is
-    # killed and the function returns 143 (128 + SIGTERM).  Works on macOS
-    # and Linux without external dependencies.
-    run_with_timeout() {
-        local timeout=$1
-        shift
-        "$@" &
-        local pid=$!
-        ( sleep "$timeout"; kill "$pid" 2>/dev/null ) &
-        local watcher=$!
-        wait "$pid" 2>/dev/null
-        local rc=$?
-        kill "$watcher" 2>/dev/null
-        wait "$watcher" 2>/dev/null
-        return $rc
-    }
-
-    # ── main ─────────────────────────────────────────────────────────────
     if ! command -v cargo-fuzz &>/dev/null; then
         yellow "  • cargo-fuzz not installed — skipping fuzz run"
         echo   "    install with: cargo install cargo-fuzz"
         exit 0
     fi
 
-    if [ -n "{{verbose}}" ]; then
-        verbose=1
-    else
-        verbose=""
+    if ! command -v timeout &>/dev/null; then
+        red "  ✗ GNU timeout not found — install with: brew install coreutils"
+        exit 1
     fi
 
+    # Wall-clock cap: fuzz timeout + 10 s grace period.
     wall_cap=$(({{timeout}} + 10))
-    failed=0
 
-    for target in solve_fuzz generator_fuzz; do
-        echo "── cargo fuzz run $target ({{timeout}}s, wall cap ${wall_cap}s)"
-        set +e
-        if [ -n "$verbose" ]; then
-            run_with_timeout "$wall_cap" \
-                cargo +nightly fuzz run "$target" \
-                -- -max_total_time={{timeout}} -runs=10000
-        else
-            run_with_timeout "$wall_cap" \
-                cargo +nightly fuzz run "$target" \
-                -- -max_total_time={{timeout}} -runs=10000 \
-                2>/dev/null
-        fi
-        rc=$?
-        set -e
-        if [ $rc -eq 0 ]; then
-            green "  ✓ $target ({{timeout}}s, no crashes)"
-        elif [ $rc -eq 143 ]; then
-            yellow "  ⚠ $target timed out after ${wall_cap}s wall clock — no crash"
-        else
-            red "  ✗ $target — crash or setup issue (exit $rc)"
-            failed=1
-        fi
-    done
-
-    if [ $failed -ne 0 ]; then
-        red "Fuzz run failed — see output above"
+    echo "── cargo fuzz run {{target}} ({{timeout}}s, wall cap ${wall_cap}s)"
+    set +e
+    if [ -n "{{verbose}}" ]; then
+        timeout --foreground "$wall_cap" \
+            cargo +nightly fuzz run "{{target}}" \
+            -- -max_total_time={{timeout}} -runs=10000
+    else
+        timeout --foreground "$wall_cap" \
+            cargo +nightly fuzz run "{{target}}" \
+            -- -max_total_time={{timeout}} -runs=10000 \
+            2>/dev/null
+    fi
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+        green "  ✓ {{target}} ({{timeout}}s, no crashes)"
+    elif [ $rc -eq 124 ] || [ $rc -eq 143 ]; then
+        yellow "  ⚠ {{target}} timed out after ${wall_cap}s wall clock — no crash"
+    else
+        red "  ✗ {{target}} — crash or setup issue (exit $rc)"
         exit 1
     fi
 

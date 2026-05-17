@@ -28,12 +28,23 @@ thread_local! {
 
 /// Solve a Sudoku puzzle using the SIMD DPLL triad solver.
 ///
-/// `input` must be an 81-character string with digits `'1'`–`'9'` for given clues and `'.'`
-/// for empty cells, or a 729-character pencilmark string.
+/// `input` must be an 81-character string with digits `'1'`–`'9'` for given clues
+/// and `'.'` or `'0'` for empty cells, or a 729-character pencilmark string.
 ///
 /// Returns `(num_solutions, solution_string, num_guesses)`.  The `solution_string` is
-/// meaningful only when `limit == 1` or `config > 0`.
+/// meaningful only when `num_solutions >= 1` and `limit == 1` or `config > 0`.
+///
+/// Returns `(0, "", 0)` for invalid or unsolvable input.
 pub fn solve_sudoku(input: &str, limit: usize, config: u32) -> (usize, String, usize) {
+    // ── input validation ────────────────────────────────────────────────
+    let len = input.len();
+    if len != 81 && len != 729 {
+        return (0, String::new(), 0);
+    }
+    if input.bytes().any(|b| !matches!(b, b'0'..=b'9' | b'.')) {
+        return (0, String::new(), 0);
+    }
+
     let (count, sol_bytes, guesses) =
         solver_dpll_triad_simd::solve(input.as_bytes(), limit, config);
     let sol_str = String::from_utf8_lossy(&sol_bytes).into_owned();
@@ -55,7 +66,18 @@ pub fn enumerate(puzzle: &str, limit: usize, mut callback: impl FnMut(&str)) -> 
 ///
 /// `pencilmark` selects pencilmark (729-char) vs. vanilla (81-char) format.
 /// Returns `true` if the puzzle was successfully constrained to a unique solution.
+/// Returns `false` for invalid input (wrong length, bad characters) or if
+/// the puzzle cannot be constrained.
 pub fn constrain(pencilmark: bool, puzzle: &mut String) -> bool {
+    // ── input validation ────────────────────────────────────────────────
+    let expected_len = if pencilmark { 729 } else { 81 };
+    if puzzle.len() != expected_len {
+        return false;
+    }
+    if puzzle.bytes().any(|b| !matches!(b, b'0'..=b'9' | b'.')) {
+        return false;
+    }
+
     let mut bytes = puzzle.as_bytes().to_vec();
     let result = GENERATOR.with(|g| g.borrow_mut().constrain(pencilmark, &mut bytes));
     *puzzle = String::from_utf8(bytes)
@@ -68,7 +90,18 @@ pub fn constrain(pencilmark: bool, puzzle: &mut String) -> bool {
 /// `pencilmark` selects pencilmark (729-char) vs. vanilla (81-char) format.
 /// `monotonic` — when `true`, stop as soon as a removed clue must be restored.
 /// Returns `true` if any clue was successfully dropped.
+/// Returns `false` for invalid input (wrong length, bad characters) or if
+/// no clue could be removed.
 pub fn minimize(pencilmark: bool, monotonic: bool, puzzle: &mut String) -> bool {
+    // ── input validation ────────────────────────────────────────────────
+    let expected_len = if pencilmark { 729 } else { 81 };
+    if puzzle.len() != expected_len {
+        return false;
+    }
+    if puzzle.bytes().any(|b| !matches!(b, b'0'..=b'9' | b'.')) {
+        return false;
+    }
+
     let mut bytes = puzzle.as_bytes().to_vec();
     let result = GENERATOR.with(|g| g.borrow_mut().minimize(pencilmark, monotonic, &mut bytes));
     *puzzle = String::from_utf8(bytes)

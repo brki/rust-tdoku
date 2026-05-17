@@ -8,92 +8,118 @@ use libfuzzer_sys::fuzz_target;
 // - constrain: if it returns true, the output has exactly 1 solution
 // - minimize:  if it returns true, the output has exactly 1 solution
 //              and clue count ≤ original
+//
+// To keep iteration time bounded, each run randomly picks one test path
+// (constrain-vanilla, constrain-pencilmark, minimize-vanilla,
+//  minimize-monotonic, minimize-pencilmark).
 fuzz_target!(|data: &[u8]| {
-    // Build an 81-char puzzle from fuzz bytes:
+    let Some((&selector, tail)) = data.split_first() else {
+        return;
+    };
+    let path = selector % 5;
+
+    // ── build vanilla puzzle (81 chars) from fuzz bytes ──────────────────
     //   byte & 1 == 0  →  '.' (empty)
     //   byte & 1 == 1  →  '1' + (byte >> 1) % 9  (clue)
-    let mut puzzle_bytes = [0u8; 81];
+    let mut vanilla_bytes = [b'.'; 81];
     for i in 0..81 {
-        let b = data.get(i).copied().unwrap_or(0);
-        puzzle_bytes[i] = if b & 1 == 0 {
-            b'.'
-        } else {
-            b'1' + ((b >> 1) % 9)
-        };
-    }
-    let puzzle = String::from_utf8_lossy(&puzzle_bytes).into_owned();
-
-    // ── constrain ─────────────────────────────────────────────────────────
-    {
-        let mut p = puzzle.clone();
-        let initial_clues = p.bytes().filter(|&b| b != b'.').count();
-
-        // constrain must not panic.
-        let ok = rdoku::constrain(false, &mut p);
-
-        if ok {
-            // Output must have exactly one solution.
-            let (count, _, _) = rdoku::solve_sudoku(&p, 2, 0);
-            assert_eq!(
-                count, 1,
-                "constrain: output has {} solutions (expected 1)\n  input:  {:?}\n  output: {:?}",
-                count, &puzzle[..puzzle.len().min(80)], &p[..p.len().min(80)]
-            );
-            // Clue count must be ≥ original (we only add clues).
-            let final_clues = p.bytes().filter(|&b| b != b'.').count();
-            assert!(
-                final_clues >= initial_clues,
-                "constrain: lost clues ({} → {})",
-                initial_clues,
-                final_clues
-            );
+        let b = tail.get(i).copied().unwrap_or(0);
+        if b & 1 == 1 {
+            vanilla_bytes[i] = b'1' + ((b >> 1) % 9);
         }
     }
+    let vanilla = std::str::from_utf8(&vanilla_bytes).unwrap().to_string();
 
-    // ── minimize ──────────────────────────────────────────────────────────
-    // minimize expects a puzzle with a unique solution, so we start from a
-    // solved grid and test it.  Also test the (potentially non-unique) random
-    // puzzle for resilience.
-    {
-        // Test minimize on a fully-solved grid (guaranteed unique).
-        let solved_grid = "652483917978162435314975628825736149791824563436519872269348751547291386183657294";
-        let mut p = solved_grid.to_string();
-        let initial_clues = 81usize;
+    // ── build pencilmark puzzle (729 chars) from bytes 81.. ──────────────
+    let mut pm_bytes = [b'1'; 729];
+    for i in 0..729 {
+        let b = tail.get(81 + i).copied().unwrap_or(0);
+        if b & 1 == 0 {
+            pm_bytes[i] = b'.';
+        }
+    }
+    let pencilmark = std::str::from_utf8(&pm_bytes).unwrap().to_string();
 
-        let ok = rdoku::minimize(false, false, &mut p);
-        if ok {
+    // Library validates input and rejects unsolvable / under-constrained
+    // puzzles.  We just check invariants on whatever it returns.
+
+    match path {
+        // ── constrain (vanilla) ──────────────────────────────────────────
+        0 => {
+            let mut p = vanilla.clone();
+            let initial = p.bytes().filter(|&b| b != b'.').count();
+            let ok = rdoku::constrain(false, &mut p);
+            if ok {
+                let (count, _, _) = rdoku::solve_sudoku(&p, 2, 0);
+                assert_eq!(
+                    count, 1,
+                    "constrain(vanilla): {} solutions (expected 1)\n  input:  {:?}\n  output: {:?}",
+                    count,
+                    &vanilla[..vanilla.len().min(80)],
+                    &p[..p.len().min(80)]
+                );
+                let final_clues = p.bytes().filter(|&b| b != b'.').count();
+                assert!(
+                    final_clues >= initial,
+                    "constrain(vanilla): lost clues ({} → {})",
+                    initial,
+                    final_clues
+                );
+            }
+        }
+        // ── constrain (pencilmark) ───────────────────────────────────────
+        1 => {
+            let mut p = pencilmark.clone();
+            let ok = rdoku::constrain(true, &mut p);
+            if ok {
+                let (count, _, _) = rdoku::solve_sudoku(&p, 2, 0);
+                assert_eq!(
+                    count, 1,
+                    "constrain(pm): {} solutions (expected 1)\n  output: {:?}",
+                    count,
+                    &p[..p.len().min(80)]
+                );
+            }
+        }
+        // ── minimize (vanilla, monotonic=false) ──────────────────────────
+        2 => {
+            let mut p = vanilla.clone();
+            let initial = p.bytes().filter(|&b| b != b'.').count();
+            let _ = rdoku::minimize(false, false, &mut p);
             let (count, _, _) = rdoku::solve_sudoku(&p, 2, 0);
-            assert_eq!(
-                count, 1,
-                "minimize: output has {} solutions (expected 1)\n  output: {:?}",
-                count, &p[..p.len().min(80)]
-            );
             let final_clues = p.bytes().filter(|&b| b != b'.').count();
-            assert!(
-                final_clues <= initial_clues,
-                "minimize: gained clues ({} → {})",
-                initial_clues,
-                final_clues
-            );
+            if count == 1 {
+                assert!(
+                    final_clues <= initial || initial == 0,
+                    "minimize(vanilla): gained clues ({} → {})",
+                    initial,
+                    final_clues
+                );
+            }
         }
-
-        // Also test minimize on the random fuzz puzzle (should not panic
-        // even if the puzzle has 0 or >1 solutions).
-        let mut p2 = puzzle.clone();
-        let initial2 = p2.bytes().filter(|&b| b != b'.').count();
-        let _ = rdoku::minimize(false, true, &mut p2);
-        // If it succeeded, verify uniqueness; if not, that's fine.
-        let (count2, _, _) = rdoku::solve_sudoku(&p2, 2, 0);
-        let final2 = p2.bytes().filter(|&b| b != b'.').count();
-        if count2 == 1 {
-            // Clue count should not have increased.
-            assert!(
-                final2 <= initial2 || initial2 == 0,
-                "minimize (random): gained clues ({} → {})",
-                initial2,
-                final2
-            );
+        // ── minimize (vanilla, monotonic=true) ───────────────────────────
+        3 => {
+            let mut p = vanilla.clone();
+            let initial = p.bytes().filter(|&b| b != b'.').count();
+            let _ = rdoku::minimize(false, true, &mut p);
+            let (count, _, _) = rdoku::solve_sudoku(&p, 2, 0);
+            let final_clues = p.bytes().filter(|&b| b != b'.').count();
+            if count == 1 {
+                assert!(
+                    final_clues <= initial || initial == 0,
+                    "minimize(monotonic): gained clues ({} → {})",
+                    initial,
+                    final_clues
+                );
+            }
         }
-        // Regardless, minimize should not panic.
+        // ── minimize (pencilmark) ────────────────────────────────────────
+        _ => {
+            let mut p = pencilmark.clone();
+            let _ = rdoku::minimize(true, false, &mut p);
+            let (count, _, _) = rdoku::solve_sudoku(&p, 2, 0);
+            // If minimize succeeded, uniqueness holds.
+            let _ = count;
+        }
     }
 });

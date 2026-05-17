@@ -10,6 +10,7 @@ This document covers the development workflow for **rdoku**, a Rust port of [tdo
 | Cargo | (bundled with Rust) | |
 | just | ≥ 1.50 | `brew install just` or `cargo install just` |
 | cargo-fuzz | latest | `cargo install cargo-fuzz` (requires nightly) |
+| GNU timeout | latest | `brew install coreutils` (macOS) or `apt install coreutils` (Linux) |
 | Docker | (optional) | For C++/Rust trace comparison tests |
 | rustfmt | (bundled) | Formatting |
 | clippy | (bundled) | Linting |
@@ -220,17 +221,22 @@ cargo clippy --fix --allow-dirty
 
 ### Fuzzing
 
-Fuzzing requires a nightly Rust toolchain:
+Fuzzing requires a nightly Rust toolchain and GNU `timeout`:
 
 ```sh
-# Install cargo-fuzz (one-time)
+# Install prerequisites (one-time)
 cargo install cargo-fuzz
+brew install coreutils      # macOS — provides GNU timeout
+# apt install coreutils     # Linux alternative
 
 # Via just (recommended): run both fuzz targets for 60s each
 just fuzz 60
 
 # Show full fuzzer output (no stderr suppression)
 just fuzz verbose=1 60
+
+# Fuzz a single target with verbose output
+just fuzz-one solve_fuzz 120 true
 
 # Or run fuzz targets directly:
 cargo +nightly fuzz run solve_fuzz -- -max_total_time=60
