@@ -1,0 +1,43 @@
+[package]
+name = "rdoku-fuzz-afl"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Prevent this from being a workspace member
+[workspace]
+
+[dependencies]
+afl = "0.15"
+
+[dependencies.rdoku]
+path = ".."
+
+[[bin]]
+name = "afl_solve"
+path = "src/bin/afl_solve.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "afl_generate"
+path = "src/bin/afl_generate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "afl_benchmark"
+path = "src/bin/afl_benchmark.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "afl_debug_solver"
+path = "src/bin/afl_debug_solver.rs"
+test = false
+doc = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

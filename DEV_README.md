@@ -10,6 +10,8 @@ This document covers the development workflow for **rdoku**, a Rust port of [tdo
 | Cargo | (bundled with Rust) | |
 | just | ≥ 1.50 | `brew install just` or `cargo install just` |
 | cargo-fuzz | latest | `cargo install cargo-fuzz` (requires nightly) |
+| cargo-afl | latest | `cargo install cargo-afl` (requires AFL++) |
+| AFL++ | latest | `brew install afl++` (macOS) or `apt install afl++` (Linux) |
 | GNU timeout | latest | `brew install coreutils` (macOS) or `apt install coreutils` (Linux) |
 | Docker | (optional) | For C++/Rust trace comparison tests |
 | rustfmt | (bundled) | Formatting |
@@ -77,10 +79,19 @@ tdoku-to-rust/
 │   ├── property_tests.rs   # Proptest property-based tests
 │   └── test_puzzles        # Puzzle corpus
 ├── fuzz/
-│   ├── Cargo.toml          # Fuzz workspace
+│   ├── Cargo.toml          # Fuzz workspace (libfuzzer → library API)
 │   └── fuzz_targets/
 │       ├── solve_fuzz.rs   # Solver fuzz target
 │       └── generator_fuzz.rs # Generator fuzz target
+├── fuzz-afl/
+│   ├── Cargo.toml          # AFL++ fuzz workspace (binary CLI fuzzing)
+│   ├── src/
+│   │   └── harness_util.rs # Shared harness utilities
+│   └── src/bin/
+│       ├── afl_solve.rs    # `solve` binary harness
+│       ├── afl_generate.rs # `generate` binary harness
+│       ├── afl_benchmark.rs # `benchmark` binary harness
+│       └── afl_debug_solver.rs # `debug_solver` binary harness
 ├── justfile                # Task runner (format, test, fuzz, bench, …)
 ├── debug/                  # Docker-based C++/Rust comparison tooling
 ├── benchmark-results/      # Historical benchmark output
@@ -247,6 +258,124 @@ cargo +nightly fuzz run solve_fuzz fuzz/artifacts/solve_fuzz/crash-<hash>
 ```
 
 Fuzz corpora and artifacts are stored in `fuzz/corpus/` and `fuzz/artifacts/` respectively.
+
+### AFL++ Binary Fuzzing
+
+AFL++ fuzzing targets the actual CLI binaries (`solve`, `generate`, `benchmark`,
+`debug_solver`) — feeding them arbitrary CLI flags, puzzle data, and file
+contents. This catches panics, hangs, signal crashes, and garbage output that
+might slip past library-level fuzz targets.
+
+It makes sense to let these run a long time, like 10 or 20 minutes.
+
+Requires [`cargo-afl`](https://github.com/rust-fuzz/afl.rs) and a system
+AFL++ installation:
+
+```sh
+# Install prerequisites (one-time)
+cargo install cargo-afl
+brew install afl++          # macOS
+# apt install afl++         # Linux
+
+# Build the harnesses + target binaries
+just afl-build
+
+# Fuzz all 4 targets for 30s each
+just afl-fuzz 30
+
+# Fuzz a single target with verbose output
+just afl-fuzz-one afl_solve 120 true
+
+# Minimize a crashing input
+just afl-tmin afl_solve path/to/crash
+
+# Or run directly with cargo-afl:
+cd fuzz-afl
+cargo afl build
+cargo afl fuzz -i corpus/afl_solve -o output/afl_solve \
+  -- target/debug/afl_solve
+```
+
+AFL corpora and crash output are stored in `fuzz-afl/corpus/` and
+`fuzz-afl/output/` respectively.
+
+All `just` AFL recipes automatically `nice` the fuzzer to priority 19
+(lowest).  For a hard CPU limit (e.g. 50%), install `cpulimit` and wrap the
+fuzz command manually:
+
+```sh
+brew install cpulimit
+cpulimit -l 50 -- just afl-fuzz-one afl_generate 600
+```
+
+**Slowing down AFL++** — set `RDOKU_AFL_DELAY_MS` to sleep N milliseconds
+between each binary invocation (useful to keep CPU temperatures down on long
+runs):
+
+```sh
+# 200 ms between execs (~5/sec instead of ~200/sec)
+RDOKU_AFL_DELAY_MS=200 just afl-fuzz log=1 30
+```
+
+**Logging invocations** — pass `log=1` to any `just` AFL recipe.  Writes one
+line per invocation to `afl-logs/<target>.log` (directory is gitignored).
+Each line includes an 8-char hex prefix showing the first 4 raw fuzz bytes
+so you can distinguish inputs that decode to the same command.
+
+```sh
+just afl-fuzz log=1 timeout=30           # all 4 targets with logging
+just afl-fuzz-one afl_generate 60 "" log=1   # single target with logging
+```
+
+#### AFL++ Troubleshooting
+On MacOS, these may need to be changed:
+* sudo sysctl kern.sysv.shmmax=524288000
+* sudo sysctl kern.sysv.shmall=131072000
+
+On MacOS: macOS ReportCrash intercepts signals. `AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1` is set in justfile.
+Look in the Console app for the crashes.
+| `saved hangs: N` in AFL HUD | Binary took longer than `-t` timeout (or the harness's own timeout) | Hang files saved to `fuzz-afl/output/default/hangs/`. Replay with: `fuzz-afl/target/debug/afl_generate < fuzz-afl/output/default/hangs/id:000000*` |
+| Harness binary hangs when run standalone | AFL-instrumented binary (`cargo afl build`) loops forever waiting for the forkserver | Use `cargo build` (non-instrumented) for standalone testing/replaying |
+
+#### AFL++ Tips
+
+- **Seeds matter.**  AFL++ starts from the corpus in `fuzz-afl/corpus/<target>/`.
+  For slow binaries like `generate`, use a minimal seed that maps to a fast
+  profile (8 zero bytes → `-p 0 -l 1 -n 1 -e 0`).  For fast binaries like
+  `solve`, `tests/test_puzzles` works well.
+
+- **Mutate what matters.**  AFL++ spends cycles flipping bits.  If those bits
+  don't change the decoded command, the fuzzer wastes time.  Use fuzz bytes
+  to derive numeric parameter values (pool size, evals, weights) so mutations
+  actually vary the behavior being tested.
+
+- **Chaos profiles catch parsing bugs.**  Dedicate a few profiles to passing
+  raw fuzz bytes directly as CLI argument values — null bytes, unicode
+  (`漢字`), negative numbers, shell metacharacters, empty strings.  These
+  verify that binaries reject malformed input cleanly rather than panicking.
+
+- **Pattern file fuzzing.**  When a binary accepts file input, test file
+  content fuzzing too: single-character files (`"0"`), files shorter/longer
+  than expected, binary files with null bytes, and unicode content.
+
+- **Use `tail -f` on the log file** while fuzzing to see what commands are
+  being tested in real time.  The hex prefix lets you verify AFL++ is
+  actually mutating inputs (different prefixes = different fuzz bytes).
+
+- **Replay hangs**
+Example: replay a hang for `generate` and inspect what parameters were used:
+- ` RDOKU_AFL_LOG=/tmp/hang_replay.log fuzz-afl/target/debug/afl_generate < fuzz-afl/output/default/hangs/id:000000*`
+- `cat /tmp/hang_replay.log`
+
+- **Output directory structure.**  AFL++ creates a session directory inside
+  `fuzz-afl/output/` (by default `default/`):
+  ```
+  fuzz-afl/output/default/
+  ├── crashes/      ← inputs that caused crashes
+  ├── hangs/        ← inputs that timed out
+  ├── queue/        ← corpus of interesting inputs
+  └── fastresume.bin
+  ```
 
 ### Benchmarking
 
