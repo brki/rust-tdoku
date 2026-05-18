@@ -11,6 +11,7 @@
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 // ── binary path resolution ────────────────────────────────────────────────
 
@@ -81,6 +82,74 @@ fn log_path() -> Option<String> {
     std::env::var("RDOKU_AFL_LOG").ok().filter(|v| !v.is_empty())
 }
 
+/// Format a SystemTime as a simple ISO-like string (YYYY-MM-DD HH:MM:SS).
+fn format_time(now: SystemTime) -> String {
+    match now.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => {
+            let total_secs = duration.as_secs();
+            let millis = duration.subsec_millis();
+
+            // Constants for date calculations.
+            const SECS_PER_DAY: u64 = 86400;
+            const SECS_PER_HOUR: u64 = 3600;
+            const SECS_PER_MIN: u64 = 60;
+
+            // Calculate days since epoch and seconds within the current day.
+            let days_since_epoch = total_secs / SECS_PER_DAY;
+            let secs_today = total_secs % SECS_PER_DAY;
+
+            // Extract time of day.
+            let hours = secs_today / SECS_PER_HOUR;
+            let minutes = (secs_today % SECS_PER_HOUR) / SECS_PER_MIN;
+            let seconds = secs_today % SECS_PER_MIN;
+
+            // Approximate year/month/day (good enough for logging).
+            // 1970-01-01 was day 0. Assume 365.2425 days per year (accounting for leap years).
+            let years_since_1970 = (days_since_epoch as f64 / 365.2425).floor() as u32;
+            let mut year = 1970 + years_since_1970;
+
+            // Days in each month (non-leap).
+            const DAYS_IN_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+            // Refine year by subtracting accumulated days.
+            let mut remaining_days = days_since_epoch;
+            loop {
+                let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+                if remaining_days < days_in_year as u64 {
+                    break;
+                }
+                remaining_days -= days_in_year as u64;
+                year += 1;
+            }
+
+            // Calculate month and day.
+            let is_leap = is_leap_year(year);
+            let mut month = 1u32;
+            let mut day = remaining_days + 1; // Days are 1-indexed.
+
+            for (i, &base_days) in DAYS_IN_MONTH.iter().enumerate() {
+                let days_in_m = if i == 1 && is_leap { 29 } else { base_days as u64 };
+                if day <= days_in_m {
+                    break;
+                }
+                day -= days_in_m;
+                month += 1;
+            }
+
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+                year, month, day, hours, minutes, seconds, millis
+            )
+        }
+        Err(_) => "<unknown>".to_string(),
+    }
+}
+
+/// Check if a year is a leap year.
+fn is_leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
 /// Log the command being run (binary + args + stdin preview + raw byte prefix).
 ///
 /// Appends one line per invocation to the file named in `RDOKU_AFL_LOG`.
@@ -91,6 +160,9 @@ fn log_invocation(binary_path: &str, args: &[&str], stdin_str: &str, raw_data: &
     let Some(ref path) = log_path() else {
         return;
     };
+
+    // Human-readable timestamp using only std::time.
+    let timestamp = format_time(SystemTime::now());
 
     // 8-char hex prefix from first 4 bytes (or fewer).
     let hex_prefix: String = raw_data.iter().take(4).map(|b| format!("{b:02x}")).collect();
@@ -110,7 +182,7 @@ fn log_invocation(binary_path: &str, args: &[&str], stdin_str: &str, raw_data: &
         .collect();
     let more = if stdin_str.len() > 120 { "…" } else { "" };
     let line = format!(
-        "[{hex_prefix:0>8}] {binary_path} {args}  ← stdin: \"{preview}{more}\" (raw: {raw_hex})\n",
+        "{timestamp} [{hex_prefix:0>8}] {binary_path} {args}  ← stdin: \"{preview}{more}\" (raw: {raw_hex})\n",
         args = args.join(" "),
     );
 

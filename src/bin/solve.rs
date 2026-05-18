@@ -334,10 +334,23 @@ fn main() {
         let input: Box<dyn BufRead> = if filename == "-" {
             Box::new(io::BufReader::new(io::stdin()))
         } else {
-            match std::fs::File::open(filename) {
-                Ok(f) => Box::new(io::BufReader::new(f)),
+            // Validate that the file exists and is a regular file before opening
+            match std::fs::metadata(filename) {
+                Ok(metadata) if metadata.is_file() => {
+                    match std::fs::File::open(filename) {
+                        Ok(f) => Box::new(io::BufReader::new(f)),
+                        Err(e) => {
+                            eprintln!("error: cannot open '{}': {}", filename, e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Ok(_) => {
+                    eprintln!("error: '{}' is not a regular file", filename);
+                    std::process::exit(1);
+                }
                 Err(e) => {
-                    eprintln!("error: cannot open '{}': {}", filename, e);
+                    eprintln!("error: cannot access '{}': {}", filename, e);
                     std::process::exit(1);
                 }
             }
