@@ -26,14 +26,14 @@ test = false
 doc = false
 
 [[bin]]
-name = "afl_benchmark"
-path = "src/bin/afl_benchmark.rs"
+name = "replay_afl_solve"
+path = "src/bin/replay_afl_solve.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "afl_debug_solver"
-path = "src/bin/afl_debug_solver.rs"
+name = "replay_afl_generate"
+path = "src/bin/replay_afl_generate.rs"
 test = false
 doc = false
 

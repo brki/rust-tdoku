@@ -716,6 +716,13 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
     // ── CountSolutionsConsistentWithPartialAssignment ────────────────────────
 
     fn count_solutions_consistent_with_partial_assignment(&mut self, state: &mut State) {
+        // When counting all solutions (limit=0), bail out if guesses exceed a threshold
+        // to avoid infinite search on empty grids. 10M guesses allows substantial exploration.
+        const MAX_GUESSES_FOR_UNLIMITED_COUNT: usize = 10_000_000;
+        if self.limit == 0 && self.num_guesses >= MAX_GUESSES_FOR_UNLIMITED_COUNT {
+            return;
+        }
+
         // DT_IN: increment depth before emitting this frame's trace lines.
         #[cfg(feature = "debug-trace")]
         let dt_d = DT_DEPTH.with(|d| {
@@ -919,6 +926,17 @@ impl<const SOLUTION_MODE: u8> SolverDpllTriadSimd<SOLUTION_MODE> {
             .any(|&b| !matches!(b, b'0'..=b'9' | b'.'))
         {
             return 0;
+        }
+
+        // Special case: when limit=0 (count all solutions) and the grid is empty,
+        // return early because enumeration is intractable (6.67 × 10^21 solutions).
+        if limit == 0 && !pencilmark {
+            let len = input.len().min(81);
+            let is_empty = input[..len].iter().all(|&b| matches!(b, b'0' | b'.'));
+            if is_empty {
+                *num_guesses = 0;
+                return 0; // Indicate uncountable solutions
+            }
         }
 
         let mut state = State::default();

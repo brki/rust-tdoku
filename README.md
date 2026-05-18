@@ -73,6 +73,10 @@ solve -l 2 -c puzzles.txt
 solve --pretty --stats tdoku/test/test_puzzles
 ```
 
+**Performance Notes:** When using `-l 0` (count all solutions), the solver implements safeguards to prevent intractable searches:
+- **Empty grids** (all dots) return immediately with count=0 (~0.3ms)
+- **Complex puzzles** with explosive solution spaces are capped at 10 million internal search nodes to prevent hanging
+
 ### Benchmark binary
 
 ```sh

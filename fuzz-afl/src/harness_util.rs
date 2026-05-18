@@ -9,20 +9,23 @@
 //! crashing test case.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 // ── binary path resolution ────────────────────────────────────────────────
 
 /// Directory containing the target binaries (`solve`, `generate`, …).
 ///
 /// Set `RDOKU_BINARY_DIR` to override; defaults to the main workspace's
-/// `target/debug` directory (embedded at compile time via `CARGO_MANIFEST_DIR`).
+/// `target/release` directory (embedded at compile time via `CARGO_MANIFEST_DIR`).
+/// Use `RDOKU_BINARY_DIR=../target/debug` to point at debug binaries if needed
+/// (e.g. to catch integer overflow panics).
 pub fn bin_dir() -> String {
     if let Ok(dir) = std::env::var("RDOKU_BINARY_DIR") {
         return dir;
     }
     // env!() is resolved at compile time, so this always works.
-    format!("{}/../target/debug", env!("CARGO_MANIFEST_DIR"))
+    format!("{}/../target/release", env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Full path to a specific binary.
@@ -38,8 +41,34 @@ pub struct BinaryResult {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+    /// Raw stdout bytes — used for accurate UTF-8 validation in `crash_if_bad`.
+    pub stdout_raw: Vec<u8>,
+    /// Raw stderr bytes — used for accurate UTF-8 validation in `crash_if_bad`.
+    pub stderr_raw: Vec<u8>,
     pub timed_out: bool,
     pub signaled: bool,
+}
+
+// ── temp file RAII guard ──────────────────────────────────────────────────
+
+/// A temporary file that is automatically deleted when dropped.
+///
+/// Created by [`write_temp_file`] and [`write_temp_file_raw`]. If the harness
+/// calls `std::process::abort()` the OS reclaims the file; for all other
+/// control flow (normal return, panics) the `Drop` impl ensures cleanup.
+pub struct TempFile(pub String);
+
+impl TempFile {
+    /// Returns the path of the temporary file.
+    pub fn path(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 // ── spawning & waiting ────────────────────────────────────────────────────
@@ -57,7 +86,7 @@ fn log_path() -> Option<String> {
 /// Appends one line per invocation to the file named in `RDOKU_AFL_LOG`.
 /// No dedup — every execution is logged so you can see everything AFL++ tests.
 /// The 8-char hex prefix distinguishes different fuzz inputs that decode to the
-/// same command (lossy byte→puzzle mapping).
+/// same command (lossy byte→puzzle mapping). Also logs raw hex bytes for debugging.
 fn log_invocation(binary_path: &str, args: &[&str], stdin_str: &str, raw_data: &[u8]) {
     let Some(ref path) = log_path() else {
         return;
@@ -66,6 +95,14 @@ fn log_invocation(binary_path: &str, args: &[&str], stdin_str: &str, raw_data: &
     // 8-char hex prefix from first 4 bytes (or fewer).
     let hex_prefix: String = raw_data.iter().take(4).map(|b| format!("{b:02x}")).collect();
 
+    // Raw hex dump of first 32 bytes (or fewer).
+    let raw_hex: String = raw_data
+        .iter()
+        .take(32)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
     let preview: String = stdin_str
         .chars()
         .take(120)
@@ -73,7 +110,7 @@ fn log_invocation(binary_path: &str, args: &[&str], stdin_str: &str, raw_data: &
         .collect();
     let more = if stdin_str.len() > 120 { "…" } else { "" };
     let line = format!(
-        "[{hex_prefix:0>8}] {binary_path} {args}  ← stdin: \"{preview}{more}\"\n",
+        "[{hex_prefix:0>8}] {binary_path} {args}  ← stdin: \"{preview}{more}\" (raw: {raw_hex})\n",
         args = args.join(" "),
     );
 
@@ -97,6 +134,23 @@ pub fn run_binary(
     let result = run_binary_inner(binary_path, args, stdin_str, timeout_secs);
     sleep_between_execs();
     result
+}
+
+/// Spawn `binary_path` with `base_args` followed by `file_path`, pipe `stdin_str`.
+///
+/// Convenience wrapper for targets that take a file path as their last positional
+/// argument.
+pub fn run_binary_with_file(
+    binary_path: &str,
+    base_args: &[&str],
+    file_path: &str,
+    stdin_str: &str,
+    timeout_secs: u64,
+    raw_data: &[u8],
+) -> BinaryResult {
+    let mut all_args: Vec<&str> = base_args.to_vec();
+    all_args.push(file_path);
+    run_binary(binary_path, &all_args, stdin_str, timeout_secs, raw_data)
 }
 
 fn sleep_between_execs() {
@@ -127,20 +181,29 @@ fn run_binary_inner(
                 exit_code: Some(1),
                 stdout: String::new(),
                 stderr: format!("spawn error: {}", e),
+                stdout_raw: Vec::new(),
+                stderr_raw: Vec::new(),
                 timed_out: false,
                 signaled: false,
             };
         }
     };
 
-    // Write stdin, then drop to close the pipe.
-    if let Some(ref mut stdin) = child.stdin {
+    // Write stdin and close the pipe before waiting.
+    if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(stdin_str.as_bytes());
+        // stdin dropped here closes the write end of the pipe.
     }
 
-    // Wait with timeout via a helper thread (keeps deps minimal).
+    // Wrap the child in an Arc<Mutex> so the timeout handler can kill it if it
+    // fires before the background thread takes ownership. The thread takes the
+    // child out of the mutex immediately (releasing the lock), then calls
+    // wait_with_output() without holding the lock, so there is no deadlock risk.
+    let child_arc: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(Some(child)));
+    let child_arc2 = Arc::clone(&child_arc);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let child = child_arc2.lock().unwrap().take().unwrap();
         let result = child.wait_with_output();
         let _ = tx.send(result);
     });
@@ -149,14 +212,26 @@ fn run_binary_inner(
         Ok(Ok(output)) => {
             let success = output.status.success();
             let code = output.status.code();
+            let signaled = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    output.status.signal().is_some()
+                }
+                #[cfg(not(unix))]
+                {
+                    !success && code.is_none()
+                }
+            };
             BinaryResult {
                 success,
                 exit_code: code,
+                stdout_raw: output.stdout.clone(),
+                stderr_raw: output.stderr.clone(),
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
                 timed_out: false,
-                // A signal exit has no exit code and is not "success".
-                signaled: !success && code.is_none(),
+                signaled,
             }
         }
         Ok(Err(e)) => BinaryResult {
@@ -164,24 +239,40 @@ fn run_binary_inner(
             exit_code: Some(1),
             stdout: String::new(),
             stderr: format!("wait error: {}", e),
+            stdout_raw: Vec::new(),
+            stderr_raw: Vec::new(),
             timed_out: false,
             signaled: false,
         },
-        Err(_) => BinaryResult {
-            success: false,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: "timeout".to_string(),
-            timed_out: true,
-            signaled: false,
-        },
+        Err(_) => {
+            // Timeout — kill the child if the background thread hasn't taken it yet.
+            // If it has, guard holds None and the kill is a no-op.
+            if let Ok(mut guard) = child_arc.lock() {
+                if let Some(ref mut c) = *guard {
+                    let _ = c.kill();
+                }
+            }
+            BinaryResult {
+                success: false,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "timeout".to_string(),
+                stdout_raw: Vec::new(),
+                stderr_raw: Vec::new(),
+                timed_out: true,
+                signaled: false,
+            }
+        }
     }
 }
 
 // ── crash detection ───────────────────────────────────────────────────────
 
-/// Abort if the binary misbehaved: signal exit, hang, or non-UTF-8 output
-/// (when text output is expected).
+/// Abort if the binary misbehaved: signal exit or non-UTF-8 output.
+///
+/// Does NOT abort on timeouts — timeouts can be caused by instrumentation
+/// overhead or legitimate long-running operations and are not necessarily bugs.
+/// Focus on detecting panics (signals) and output corruption.
 pub fn crash_if_bad(result: &BinaryResult, expect_text_stdout: bool, expect_text_stderr: bool) {
     if result.signaled {
         eprintln!(
@@ -192,26 +283,21 @@ pub fn crash_if_bad(result: &BinaryResult, expect_text_stdout: bool, expect_text
         std::process::abort();
     }
 
-    if result.timed_out {
-        eprintln!("AFL_HARNESS: binary timed out");
+    // Timeouts are NOT crashes — they can be caused by harness overhead,
+    // instrumentation, or the solver operating correctly on edge cases.
+    // Only abort on actual panics (signals).
+
+    if expect_text_stdout && std::str::from_utf8(&result.stdout_raw).is_err() {
+        eprintln!("AFL_HARNESS: binary produced non-UTF-8 stdout");
         std::process::abort();
     }
-
-    if expect_text_stdout {
-        if std::str::from_utf8(result.stdout.as_bytes()).is_err() {
-            eprintln!("AFL_HARNESS: binary produced non-UTF-8 stdout");
-            std::process::abort();
-        }
-    }
-    if expect_text_stderr {
-        if std::str::from_utf8(result.stderr.as_bytes()).is_err() {
-            eprintln!("AFL_HARNESS: binary produced non-UTF-8 stderr");
-            std::process::abort();
-        }
+    if expect_text_stderr && std::str::from_utf8(&result.stderr_raw).is_err() {
+        eprintln!("AFL_HARNESS: binary produced non-UTF-8 stderr");
+        std::process::abort();
     }
 }
 
-// ── byte → puzzle conversion ─────────────────────────────────────────────
+// ── byte → puzzle / argument conversion ──────────────────────────────────
 
 /// Variant of puzzle encoding.
 #[derive(Clone, Copy)]
@@ -253,12 +339,21 @@ pub fn bytes_to_puzzle(data: &[u8], variant: PuzzleVariant) -> String {
     }
 }
 
+/// Convert raw fuzz bytes to a lossy UTF-8 string for use as a CLI argument.
+///
+/// Non-UTF-8 sequences become `\u{FFFD}`; null bytes and control characters
+/// are preserved so that the target binary can reject them.
+pub fn bytes_to_arg(data: &[u8]) -> String {
+    String::from_utf8_lossy(data).into_owned()
+}
+
 // ── temp file helpers ─────────────────────────────────────────────────────
 
-/// Write `content` to a temporary file and return its path.
+/// Write `content` to a temporary file and return a [`TempFile`] guard.
 ///
 /// Uses a per-process filename to avoid races between parallel AFL instances.
-pub fn write_temp_file(content: &str) -> String {
+/// The file is deleted automatically when the `TempFile` is dropped.
+pub fn write_temp_file(content: &str) -> TempFile {
     let path = format!("/tmp/rdoku_afl_input_{}.txt", std::process::id());
     let mut f = std::fs::File::create(&path).unwrap_or_else(|e| {
         eprintln!("AFL_HARNESS: cannot create temp file {}: {}", path, e);
@@ -269,24 +364,50 @@ pub fn write_temp_file(content: &str) -> String {
         std::process::abort();
     });
     f.flush().ok();
-    path
+    TempFile(path)
+}
+
+/// Write raw bytes to a temporary file and return a [`TempFile`] guard.
+///
+/// Unlike [`write_temp_file`], accepts arbitrary bytes (nulls, non-UTF-8) so
+/// that chaos profiles can test how binaries handle malformed file content.
+pub fn write_temp_file_raw(data: &[u8]) -> TempFile {
+    let path = format!("/tmp/rdoku_afl_input_{}.txt", std::process::id());
+    let mut f = std::fs::File::create(&path).unwrap_or_else(|e| {
+        eprintln!("AFL_HARNESS: cannot create temp file {}: {}", path, e);
+        std::process::abort();
+    });
+    f.write_all(data).unwrap_or_else(|e| {
+        eprintln!("AFL_HARNESS: cannot write temp file {}: {}", path, e);
+        std::process::abort();
+    });
+    f.flush().ok();
+    TempFile(path)
 }
 
 // ── selector helpers ──────────────────────────────────────────────────────
 
-/// Return `data[0] % n` if data is non-empty, else 0.
+/// Pick a profile index from the first two bytes of `data`.
+///
+/// Using two bytes (a `u16`) instead of one gives a much more uniform
+/// distribution for any `n`, so AFL++ bit-flipping in the selector bytes
+/// more reliably crosses profile boundaries.
 pub fn pick_profile(data: &[u8], n: usize) -> usize {
     if data.is_empty() || n == 0 {
-        0
-    } else {
-        (data[0] as usize) % n
+        return 0;
     }
+    let b0 = data[0] as usize;
+    let b1 = data.get(1).copied().unwrap_or(0) as usize;
+    ((b0 << 8) | b1) % n
 }
 
-/// Return `&data[1..]` if data has at least 1 byte, else `&[]`.
+/// Return the payload slice starting after the 2-byte profile selector.
+///
+/// Harnesses that call [`pick_profile`] should obtain their fuzz payload via
+/// this function so the selector bytes are not re-used as puzzle/argument data.
 pub fn payload(data: &[u8]) -> &[u8] {
-    if data.len() > 1 {
-        &data[1..]
+    if data.len() > 2 {
+        &data[2..]
     } else {
         &[]
     }

@@ -733,7 +733,15 @@ fn print_usage() {
 
 fn main() {
     let mut options = Options::default();
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args_os()
+        .enumerate()
+        .map(|(idx, os)| {
+            os.into_string().unwrap_or_else(|bad| {
+                eprintln!("Error: argument {} is not valid UTF-8: {:?}", idx, bad);
+                std::process::exit(1);
+            })
+        })
+        .collect();
     let mut i = 1usize;
     let mut pattern_file: Option<String> = None;
 
@@ -753,10 +761,21 @@ fn main() {
             std::process::exit(0);
         } else if arg == "--skip" {
             i += 1;
-            if let Some(val) = args.get(i) {
-                if let Ok(v) = val.parse() {
-                    options.skip = v;
+            match args.get(i) {
+                None => {
+                    eprintln!("Error: --skip requires a non-negative integer argument.");
+                    std::process::exit(1);
                 }
+                Some(val) => match val.parse::<u64>() {
+                    Ok(v) => options.skip = v,
+                    Err(_) => {
+                        eprintln!(
+                            "Error: invalid value for --skip: {:?} (expected a non-negative integer).",
+                            val
+                        );
+                        std::process::exit(1);
+                    }
+                },
             }
             i += 1;
         } else if arg.starts_with('-') && arg.len() == 2 {
@@ -765,44 +784,116 @@ fn main() {
             match ch {
                 // flags with required numeric arguments
                 'c' | 'g' | 'r' | 'd' | 'e' | 'l' | 'n' => {
-                    let val = args.get(i).cloned().unwrap_or_default();
-                    i += 1;
+                    let val = match args.get(i) {
+                        Some(v) => {
+                            let v = v.clone();
+                            i += 1;
+                            v
+                        }
+                        None => {
+                            eprintln!("Error: -{} requires a numeric argument.", ch);
+                            std::process::exit(1);
+                        }
+                    };
                     match ch {
-                        'c' => {
-                            if let Ok(v) = val.parse() {
-                                options.clue_weight = v;
+                        'c' => match val.parse::<f64>() {
+                            Ok(v) if v >= 0.0 => options.clue_weight = v,
+                            Ok(v) => {
+                                eprintln!(
+                                    "Error: invalid value for -c: {} (must be a non-negative number).",
+                                    v
+                                );
+                                std::process::exit(1);
                             }
-                        }
-                        'g' => {
-                            if let Ok(v) = val.parse() {
-                                options.guess_weight = v;
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -c: {:?} (expected a non-negative number).",
+                                    val
+                                );
+                                std::process::exit(1);
                             }
-                        }
-                        'r' => {
-                            if let Ok(v) = val.parse() {
-                                options.random_weight = v;
+                        },
+                        'g' => match val.parse::<f64>() {
+                            Ok(v) if v >= 0.0 => options.guess_weight = v,
+                            Ok(v) => {
+                                eprintln!(
+                                    "Error: invalid value for -g: {} (must be a non-negative number).",
+                                    v
+                                );
+                                std::process::exit(1);
                             }
-                        }
-                        'd' => {
-                            if let Ok(v) = val.parse() {
-                                options.clues_to_drop = v;
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -g: {:?} (expected a non-negative number).",
+                                    val
+                                );
+                                std::process::exit(1);
                             }
-                        }
-                        'e' => {
-                            if let Ok(v) = val.parse() {
-                                options.num_evals = v;
+                        },
+                        'r' => match val.parse::<f64>() {
+                            Ok(v) if v >= 0.0 => options.random_weight = v,
+                            Ok(v) => {
+                                eprintln!(
+                                    "Error: invalid value for -r: {} (must be a non-negative number).",
+                                    v
+                                );
+                                std::process::exit(1);
                             }
-                        }
-                        'l' => {
-                            if let Ok(v) = val.parse() {
-                                options.max_puzzles = v;
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -r: {:?} (expected a non-negative number).",
+                                    val
+                                );
+                                std::process::exit(1);
                             }
-                        }
-                        'n' => {
-                            if let Ok(v) = val.parse() {
-                                options.num_puzzles_in_pool = v;
+                        },
+                        'd' => match val.parse::<usize>() {
+                            Ok(v) => options.clues_to_drop = v,
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -d: {:?} (expected a non-negative integer).",
+                                    val
+                                );
+                                std::process::exit(1);
                             }
-                        }
+                        },
+                        'e' => match val.parse::<usize>() {
+                            Ok(v) => options.num_evals = v,
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -e: {:?} (expected a non-negative integer).",
+                                    val
+                                );
+                                std::process::exit(1);
+                            }
+                        },
+                        'l' => match val.parse::<u64>() {
+                            Ok(v) => options.max_puzzles = v,
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -l: {:?} (expected a positive integer).",
+                                    val
+                                );
+                                std::process::exit(1);
+                            }
+                        },
+                        'n' => match val.parse::<usize>() {
+                            Ok(v) if v >= 1 => options.num_puzzles_in_pool = v,
+                            Ok(v) => {
+                                eprintln!(
+                                    "Error: invalid value for -n: {} (must be at least 1).",
+                                    v
+                                );
+                                std::process::exit(1);
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: invalid value for -n: {:?} (expected a positive integer).",
+                                    val
+                                );
+                                std::process::exit(1);
+                            }
+                        },
                         _ => unreachable!(),
                     }
                 }

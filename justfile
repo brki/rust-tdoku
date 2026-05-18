@@ -148,7 +148,7 @@ fuzz-one target timeout="30" verbose="":
 # ── AFL++ fuzzing (binary-level) ──────────────────────────────────────────────
 
 # Build AFL-instrumented harnesses (requires cargo-afl + AFL++).
-@afl-build:
+afl-build:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -173,8 +173,8 @@ fuzz-one target timeout="30" verbose="":
         exit 1
     fi
 
-    echo "==> Building rdoku binaries (debug, for fuzzing)"
-    cargo build --bin solve --bin generate --bin benchmark --bin debug_solver
+    echo "==> Building rdoku binaries (release, for fuzzing)"
+    cargo build --release --bin solve --bin generate
 
     echo "==> Building AFL harnesses"
     cd fuzz-afl
@@ -193,7 +193,7 @@ afl-fuzz timeout="30" verbose="" log="":
         exit 1
     fi
     failed=0
-    for target in afl_solve afl_generate afl_benchmark afl_debug_solver; do
+    for target in afl_solve afl_generate; do
         just afl-fuzz-one "$target" "{{timeout}}" "{{verbose}}" "{{log}}" || failed=1
     done
     exit $failed
@@ -252,8 +252,21 @@ afl-fuzz-one target timeout="30" verbose="" log="":
     # Ensure output parent directory exists (AFL++ creates the target subdir).
     mkdir -p "$out_parent"
 
-    # Clean previous output for this target to avoid conflicts.
-    rm -rf "$out_parent/{{target}}"
+    # Resume from previous queue if it exists; otherwise start from corpus.
+    # Use 'just afl-clean' to wipe the queue for a fresh start.
+    if [ -d "$out_parent/{{target}}" ]; then
+        # Archive crashes before resuming to preserve historical crash data
+        if [ -d "$out_parent/{{target}}/crashes" ] && [ -n "$(ls -A "$out_parent/{{target}}/crashes" 2>/dev/null)" ]; then
+            timestamp=$(date +%Y%m%d_%H%M%S)
+            archive_dir="$afl_dir/crashes_archived/{{target}}_$timestamp"
+            mkdir -p "$archive_dir"
+            mv "$out_parent/{{target}}/crashes"/* "$archive_dir/"
+            green "  • archived crashes to $archive_dir"
+        fi
+        fuzz_args=(-i-)
+    else
+        fuzz_args=(-i "$corp_dir")
+    fi
 
     echo "── afl fuzz {{target}} ({{timeout}}s)"
 
@@ -262,13 +275,13 @@ afl-fuzz-one target timeout="30" verbose="" log="":
 
     if [ -n "{{verbose}}" ]; then
         timeout --foreground "$(({{timeout}} + 5))" \
-            nice -n 19 cargo afl fuzz -i "$corp_dir" -o "$out_parent" \
-            -t "5000" -V "{{timeout}}" \
+            nice -n 19 cargo afl fuzz "${fuzz_args[@]}" -o "$out_parent/{{target}}" \
+            -t "15000" -V "{{timeout}}" \
             -- "fuzz-afl/target/debug/{{target}}"
     else
         timeout --foreground "$(({{timeout}} + 5))" \
-            nice -n 19 cargo afl fuzz -i "$corp_dir" -o "$out_parent" \
-            -t "5000" -V "{{timeout}}" \
+            nice -n 19 cargo afl fuzz "${fuzz_args[@]}" -o "$out_parent/{{target}}" \
+            -t "15000" -V "{{timeout}}" \
             -- "fuzz-afl/target/debug/{{target}}" \
             2>/dev/null
     fi
@@ -283,6 +296,26 @@ afl-fuzz-one target timeout="30" verbose="" log="":
         exit 1
     fi
 
+# Remove all AFL++ output directories for a fresh start on next fuzz run.
+@afl-clean:
+    rm -rf fuzz-afl/output fuzz-afl/crashes_archived
+    echo "  ✓ AFL++ output and archived crashes cleared"
+
+# Show AFL++ fuzzing status for all active output directories.
+afl-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out_parent="fuzz-afl/output"
+    if ! command -v afl-whatsup &>/dev/null; then
+        echo "afl-whatsup not found — install AFL++: brew install afl++ (macOS)"
+        exit 1
+    fi
+    if [ -z "$(ls -A "$out_parent" 2>/dev/null)" ]; then
+        echo "No AFL++ output directories found in $out_parent"
+        exit 0
+    fi
+    afl-whatsup "$out_parent"
+
 # Minimize a crashing AFL test case.
 # Usage: just afl-tmin <target> <input_file>
 afl-tmin target input:
@@ -292,10 +325,70 @@ afl-tmin target input:
     cargo afl tmin -i "{{input}}" -o "{{input}}.min" -- "$afl_dir/target/debug/{{target}}"
     echo "Minimized to {{input}}.min"
 
+# Inspect an AFL crash or hang by running the harness with a specific input.
+# Logs detailed execution trace to a log file and displays it.
+# The target (afl_generate or afl_solve) is deduced from the input file path.
+# Usage: just afl-inspect fuzz-afl/output/afl_generate/default/crashes/id:000000,sig:06,...
+#        just afl-inspect fuzz-afl/output/afl_solve/default/hangs/id:000001,... /path/to/custom.log
+afl-inspect input logfile="/tmp/afl-inspect.log":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Extract target from input path: fuzz-afl/output/<target>/...
+    target=$(echo "{{input}}" | sed 's|.*fuzz-afl/output/\([^/]*\).*|\1|')
+
+    if [ -z "$target" ]; then
+        echo "Error: cannot deduce target from input path {{input}}"
+        echo "Expected path like: fuzz-afl/output/<target>/default/crashes/..."
+        exit 1
+    fi
+
+    if ! [[ "$target" =~ ^afl_(generate|solve)$ ]]; then
+        echo "Error: target must be afl_generate or afl_solve, got: $target"
+        exit 1
+    fi
+
+    if [ ! -f "{{input}}" ]; then
+        echo "Error: input file not found: {{input}}"
+        exit 1
+    fi
+
+    log_file="{{logfile}}"
+    echo "── Inspecting $target with input: {{input}}"
+    echo "  Log: $log_file"
+    echo ""
+
+    # Truncate the log file so this run starts fresh.
+    : > "$log_file"
+
+    # AFL-instrumented binaries hang when run standalone — they try to handshake
+    # with an afl-fuzz parent via a forkserver pipe that never comes.  Build the
+    # non-instrumented replay binaries with plain cargo build instead.
+    ( cd fuzz-afl && cargo build --release --bin "replay_${target}" -q 2>&1 )
+
+    # Export log file for harness to write detailed trace
+    export RDOKU_AFL_LOG="$log_file"
+
+    # Run the non-instrumented replay harness with the input file
+    set +e
+    "fuzz-afl/target/release/replay_${target}" < "{{input}}"
+    rc=$?
+    set -e
+
+    echo ""
+    echo "── Output log:"
+    if [ -f "$log_file" ]; then
+        cat "$log_file"
+    else
+        echo "(no log file was created)"
+    fi
+
+    exit $rc
+
 # ── comparison ────────────────────────────────────────────────────────────────
 
 # Run Docker-based C++/Rust trace comparison tests.
-@comparison verbose="":
+comparison verbose="":
     #!/usr/bin/env bash
     # Usage: just comparison [verbose=1]
     set -euo pipefail
@@ -308,7 +401,7 @@ afl-tmin target input:
 # ── generated puzzle verification ─────────────────────────────────────────────
 
 # Generate and verify unique-solution puzzles.
-@generated count="1000" verbose="":
+generated count="1000" verbose="":
     #!/usr/bin/env bash
     # Usage: just generated [count] [verbose=1]
     set -euo pipefail
@@ -355,7 +448,6 @@ afl-tmin target input:
 
 # Run everything: validate + fuzz + comparison + generated + bench.
 all-tests fuzz-timeout="30" generated-count="1000" verbose="":
-    # Usage: just all [fuzz-timeout] [generated-count]
     just validate
     just fuzz {{fuzz-timeout}} {{verbose}}
     just comparison {{verbose}}

@@ -5,3 +5,5 @@
 //! catching panics, hangs, signal crashes, and garbage output.
 
 pub mod harness_util;
+pub mod generate_logic;
+pub mod solve_logic;

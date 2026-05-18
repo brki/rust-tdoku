@@ -31,7 +31,9 @@ fuzz/corpus/
 # AFL++ fuzz artifacts
 fuzz-afl/corpus/
 fuzz-afl/output/
+fuzz-afl/crashes_archived/
 fuzz-afl/target/
+fuzz-afl/target-replay/
 
 # AFL harness logs (project-local, cleaned by justfile before each logging run)
 afl-logs/

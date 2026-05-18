@@ -180,7 +180,15 @@ fn print_usage() {
 fn main() {
     let mut options = Options::default();
     let mut files: Vec<String> = Vec::new();
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args_os()
+        .enumerate()
+        .map(|(idx, os)| {
+            os.into_string().unwrap_or_else(|bad| {
+                eprintln!("error: argument {} is not valid UTF-8: {:?}", idx, bad);
+                std::process::exit(1);
+            })
+        })
+        .collect();
     let mut i = 1usize;
 
     while i < args.len() {

@@ -89,9 +89,7 @@ tdoku-to-rust/
 │   │   └── harness_util.rs # Shared harness utilities
 │   └── src/bin/
 │       ├── afl_solve.rs    # `solve` binary harness
-│       ├── afl_generate.rs # `generate` binary harness
-│       ├── afl_benchmark.rs # `benchmark` binary harness
-│       └── afl_debug_solver.rs # `debug_solver` binary harness
+│       └── afl_generate.rs # `generate` binary harness
 ├── justfile                # Task runner (format, test, fuzz, bench, …)
 ├── debug/                  # Docker-based C++/Rust comparison tooling
 ├── benchmark-results/      # Historical benchmark output
@@ -297,7 +295,7 @@ cargo afl fuzz -i corpus/afl_solve -o output/afl_solve \
 ```
 
 AFL corpora and crash output are stored in `fuzz-afl/corpus/` and
-`fuzz-afl/output/` respectively.
+`fuzz-afl/output/[target]/default` respectively.
 
 All `just` AFL recipes automatically `nice` the fuzzer to priority 19
 (lowest).  For a hard CPU limit (e.g. 50%), install `cpulimit` and wrap the
@@ -323,7 +321,7 @@ Each line includes an 8-char hex prefix showing the first 4 raw fuzz bytes
 so you can distinguish inputs that decode to the same command.
 
 ```sh
-just afl-fuzz log=1 timeout=30           # all 4 targets with logging
+just afl-fuzz log=1 timeout=30           # all targets with logging
 just afl-fuzz-one afl_generate 60 "" log=1   # single target with logging
 ```
 
@@ -364,7 +362,7 @@ Look in the Console app for the crashes.
 
 - **Replay hangs**
 Example: replay a hang for `generate` and inspect what parameters were used:
-- ` RDOKU_AFL_LOG=/tmp/hang_replay.log fuzz-afl/target/debug/afl_generate < fuzz-afl/output/default/hangs/id:000000*`
+- ` RDOKU_AFL_LOG=/tmp/hang_replay.log fuzz-afl/target/debug/afl_generate < fuzz-afl/output/afl_generate/default/hangs/id:000000*`
 - `cat /tmp/hang_replay.log`
 
 - **Output directory structure.**  AFL++ creates a session directory inside
