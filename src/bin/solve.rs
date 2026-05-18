@@ -13,6 +13,8 @@ struct Options {
     pretty: bool,
     stats: bool,
     solver: Solver,
+    find_all: bool,
+    display_multiple_solutions: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,8 +33,41 @@ impl Default for Options {
             pretty: false,
             stats: false,
             solver: Solver::Simd,
+            find_all: false,
+            display_multiple_solutions: false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/// Count the number of given clues (digits 1-9) in a puzzle.
+fn count_clues(puzzle: &str) -> usize {
+    puzzle.bytes().filter(|&b| matches!(b, b'1'..=b'9')).count()
+}
+
+/// Returns the effective limit for a given puzzle, applying the safety cap
+/// when limit=0 on a sparse puzzle (unless --find-all is set).
+fn effective_limit(puzzle: &str, options: &Options) -> usize {
+    if options.find_all || options.limit != 0 {
+        return options.limit;
+    }
+    // limit == 0 and !find_all — apply safety check for vanilla format
+    if !options.pencilmark {
+        let clues = count_clues(puzzle);
+        if clues < 17 {
+            eprintln!(
+                "warning: -l 0 with only {} clue(s) (< 17) — setting limit to 10. \
+                 Use --find-all if you really want to count all solutions \
+                 (this may be very slow).",
+                clues
+            );
+            return 10;
+        }
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -70,17 +105,16 @@ fn format_pretty(solution: &str) -> String {
 // Solve one puzzle
 // ---------------------------------------------------------------------------
 
-fn solve_line(puzzle: &str, options: &Options) -> (usize, String, usize) {
+fn solve_line(puzzle: &str, limit: usize, options: &Options) -> (usize, String, usize) {
     match options.solver {
-        Solver::Simd => rdoku::solve_sudoku(puzzle, options.limit, 0),
+        Solver::Simd => rdoku::solve_sudoku(puzzle, limit, 0),
         Solver::Scc => {
             let (count, sol, guesses) =
-                rdoku::solver_dpll_triad_scc::solve(puzzle.as_bytes(), options.limit, 0);
+                rdoku::solver_dpll_triad_scc::solve(puzzle.as_bytes(), limit, 0);
             (count, String::from_utf8_lossy(&sol).into_owned(), guesses)
         }
         Solver::Basic => {
-            let (count, sol, guesses) =
-                rdoku::solver_basic::solve(puzzle.as_bytes(), options.limit, 0);
+            let (count, sol, guesses) = rdoku::solver_basic::solve(puzzle.as_bytes(), limit, 0);
             (count, String::from_utf8_lossy(&sol).into_owned(), guesses)
         }
     }
@@ -135,8 +169,9 @@ fn print_usage() {
     eprintln!("  -l <limit>    Stop counting after this many solutions per puzzle.");
     eprintln!("                 limit=1  Find the first solution and stop (default).");
     eprintln!("                 limit=2  Detect uniqueness: count will be 1 or 2+.");
-    eprintln!("                 limit=0  Count all solutions (may be very slow for");
-    eprintln!("                          puzzles with many solutions).");
+    eprintln!("                 limit=0  Count all solutions. For puzzles with fewer");
+    eprintln!("                          than 17 clues the limit is automatically");
+    eprintln!("                          capped at 10 unless --find-all is also passed.");
     eprintln!("                 Default: 1");
     eprintln!("  -c            Count-only mode. Output only solution count and guesses,");
     eprintln!("                 not the solution string.");
@@ -146,6 +181,14 @@ fn print_usage() {
     eprintln!("  --stats       Print a summary line to stderr after all puzzles:");
     eprintln!("                 total puzzles, total solved, total guesses, elapsed time,");
     eprintln!("                 and puzzles/second.");
+    eprintln!("  --find-all    Count all solutions without the safety limit.");
+    eprintln!("                 Equivalent to -l 0 but suppresses the low-clue warning.");
+    eprintln!("                 Warning: puzzles with few clues may have enormous solution");
+    eprintln!("                 counts; this can be extremely slow.");
+    eprintln!("  --display-multiple-solutions");
+    eprintln!("                 When the limit is > 1, print each solution found on its");
+    eprintln!("                 own line before the summary. Always uses the SIMD solver.");
+    eprintln!("                 Guess counts are not available in this mode (reported as 0).");
     eprintln!("  -s <solver>   Solver to use: simd | scc | basic.  Default: simd");
     eprintln!("  -h            Display this help message.");
     eprintln!();
@@ -214,6 +257,19 @@ fn main() {
                 options.pencilmark = true;
                 i += 1;
             }
+            "--find-all" => {
+                if options.limit != 1 {
+                    eprintln!("error: cannot use both --find-all and -l");
+                    std::process::exit(1);
+                }
+                options.find_all = true;
+                options.limit = 0;
+                i += 1;
+            }
+            "--display-multiple-solutions" => {
+                options.display_multiple_solutions = true;
+                i += 1;
+            }
             _ if arg.starts_with('-') && arg.len() == 2 => {
                 let ch = arg.chars().nth(1).unwrap();
                 i += 1;
@@ -224,6 +280,10 @@ fn main() {
                 let val = &args[i];
                 match ch {
                     'l' => {
+                        if options.find_all {
+                            eprintln!("error: cannot use both --find-all and -l");
+                            std::process::exit(1);
+                        }
                         options.limit = val.parse().unwrap_or_else(|_| {
                             eprintln!("error: -l requires a non-negative integer, got '{val}'");
                             std::process::exit(1);
@@ -305,33 +365,60 @@ fn main() {
                 continue;
             }
 
-            let (count, solution, guesses) = solve_line(puzzle, &options);
+            let limit = effective_limit(puzzle, &options);
+
+            let (count, guesses) = if options.display_multiple_solutions {
+                // Use enumerate to collect all solutions (up to limit).
+                // enumerate uses 0 to mean "return nothing", so convert 0 → usize::MAX.
+                let enum_limit = if limit == 0 { usize::MAX } else { limit };
+                let mut solutions: Vec<String> = Vec::new();
+                let count = rdoku::enumerate(puzzle, enum_limit, |sol| {
+                    solutions.push(sol.to_string());
+                });
+
+                if !options.count_only {
+                    for sol in &solutions {
+                        if options.pretty {
+                            write!(out, "{}", format_pretty(sol)).unwrap();
+                        }
+                        writeln!(out, "{}", sol).unwrap();
+                    }
+                }
+                // Summary: count + 0 for guesses (enumerate doesn't expose them)
+                writeln!(out, "{}  {}", count, 0).unwrap();
+
+                (count, 0usize)
+            } else {
+                let (count, solution, guesses) = solve_line(puzzle, limit, &options);
+
+                if options.pretty && count > 0 {
+                    let sol_for_pretty = if solution.trim_matches('\0').is_empty() {
+                        puzzle
+                    } else {
+                        &solution
+                    };
+                    write!(out, "{}", format_pretty(sol_for_pretty)).unwrap();
+                }
+
+                if options.count_only {
+                    writeln!(out, "{}  {}", count, guesses).unwrap();
+                } else {
+                    let sol_out = if solution.bytes().all(|b| b == 0) {
+                        ".".repeat(81)
+                    } else {
+                        solution.clone()
+                    };
+                    writeln!(out, "{}  {}  {}", sol_out, count, guesses).unwrap();
+                }
+
+                (count, guesses)
+            };
 
             total_puzzles += 1;
             if count > 0 {
                 total_solved += 1;
             }
             total_guesses += guesses as u64;
-
-            if options.pretty && count > 0 {
-                let sol_for_pretty = if solution.trim_matches('\0').is_empty() {
-                    puzzle
-                } else {
-                    &solution
-                };
-                write!(out, "{}", format_pretty(sol_for_pretty)).unwrap();
-            }
-
-            if options.count_only {
-                writeln!(out, "{}  {}", count, guesses).unwrap();
-            } else {
-                let sol_out = if solution.bytes().all(|b| b == 0) {
-                    ".".repeat(81)
-                } else {
-                    solution.clone()
-                };
-                writeln!(out, "{}  {}  {}", sol_out, count, guesses).unwrap();
-            }
         }
     }
 

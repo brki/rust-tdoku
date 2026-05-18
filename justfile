@@ -296,6 +296,16 @@ afl-fuzz-one target timeout="30" verbose="" log="":
         exit 1
     fi
 
+# Decode an AFL++ fuzz input file to see what command it represents.
+# Usage: just afl-decode fuzz-afl/output/afl_solve/default/crashes/id:000000,sig:06,...
+afl-decode input:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd fuzz-afl
+    cargo build --release --bin decode_fuzz_input -q 2>&1
+    cd ..
+    fuzz-afl/target/release/decode_fuzz_input "{{input}}"
+
 # Remove all AFL++ output directories for a fresh start on next fuzz run.
 @afl-clean:
     rm -rf fuzz-afl/output fuzz-afl/crashes_archived
