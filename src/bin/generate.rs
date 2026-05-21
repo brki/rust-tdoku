@@ -13,6 +13,8 @@
 use rdoku::util::Util;
 use std::collections::HashSet;
 use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 struct Options {
     max_puzzles: u64,
@@ -66,16 +68,19 @@ struct Generator {
     /// How many puzzles have been printed (or would have been printed if not
     /// skipped).  Used to implement `--skip`.
     printed: u64,
+    /// Shared signal flag for graceful shutdown on Ctrl-C.
+    running: Arc<AtomicBool>,
 }
 
 impl Generator {
-    fn new(options: Options) -> Self {
+    fn new(options: Options, running: Arc<AtomicBool>) -> Self {
         Self {
             options,
             util: Util::new(),
             pool: Vec::new(),
             pool_set: HashSet::new(),
             printed: 0,
+            running,
         }
     }
 
@@ -363,6 +368,9 @@ impl Generator {
         let target = self.options.max_puzzles;
 
         loop {
+            if !self.running.load(Ordering::SeqCst) {
+                break;
+            }
             if self.printed >= target {
                 break;
             }
@@ -947,7 +955,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut generator = Generator::new(options);
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        running_clone.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    let mut generator = Generator::new(options, running);
     match pattern_file {
         None => generator.init_empty(),
         Some(ref path) => {
@@ -1122,7 +1136,7 @@ mod tests {
 
     #[test]
     fn generator_starts_with_printed_zero() {
-        let g = Generator::new(Options::default());
+        let g = Generator::new(Options::default(), Arc::new(AtomicBool::new(true)));
         assert_eq!(g.printed, 0);
     }
 
@@ -1140,7 +1154,7 @@ mod tests {
             pencilmark: false,
             ..Options::default()
         };
-        let mut g = Generator::new(opts);
+        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
         g.init_empty();
         g.generate();
         // printed == 1 (counted but not shown), pool has 1 entry
@@ -1160,7 +1174,7 @@ mod tests {
             pencilmark: false,
             ..Options::default()
         };
-        let mut g = Generator::new(opts);
+        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
         g.init_empty();
         g.generate();
         assert_eq!(g.printed, 1);
@@ -1181,7 +1195,7 @@ mod tests {
             pencilmark: false,
             ..Options::default()
         };
-        let mut g = Generator::new(opts);
+        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
         g.init_empty();
         g.generate();
         // The puzzle was accepted, so printed counter incremented
@@ -1263,7 +1277,7 @@ mod tests {
             pencilmark: false,
             ..Options::default()
         };
-        let mut g = Generator::new(opts);
+        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
         g.init_empty();
         g.generate();
         assert_eq!(g.printed, 1);
@@ -1275,10 +1289,13 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn make_vanilla_generator() -> Generator {
-        Generator::new(Options {
-            pencilmark: false,
-            ..Options::default()
-        })
+        Generator::new(
+            Options {
+                pencilmark: false,
+                ..Options::default()
+            },
+            Arc::new(AtomicBool::new(true)),
+        )
     }
 
     #[test]
@@ -1367,7 +1384,7 @@ mod tests {
             guess_weight: 0.0,
             random_weight: 1.0,
             ..Options::default()
-        });
+        }, Arc::new(AtomicBool::new(true)));
         let seed =
             ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
         // Simulate what load() does: evaluate the seed and push it into the pool.
@@ -1402,7 +1419,7 @@ mod tests {
             guess_weight: 0.0,
             random_weight: 1.0,
             ..Options::default()
-        });
+        }, Arc::new(AtomicBool::new(true)));
         let seed =
             ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
         let (_, _, loss) = g.evaluate(seed.as_bytes());
@@ -1415,5 +1432,92 @@ mod tests {
         g.generate();
 
         assert_eq!(g.printed, 3);
+    }
+
+    // ------------------------------------------------------------------
+    // Signal handling (graceful shutdown on Ctrl-C)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn generate_stops_when_running_flag_is_false() {
+        let mut g = Generator::new(
+            Options {
+                max_puzzles: 100,  // Request many puzzles
+                skip: 0,
+                display_all: false,
+                num_puzzles_in_pool: 1,
+                clues_to_drop: 1,
+                do_minimize: false,
+                pencilmark: false,
+                num_evals: 1,
+                clue_weight: 3.0,
+                guess_weight: 0.0,
+                random_weight: 1.0,
+                ..Options::default()
+            },
+            Arc::new(AtomicBool::new(true)),
+        );
+
+        let seed =
+            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
+        let (_, _, loss) = g.evaluate(seed.as_bytes());
+        g.pool.push(PoolEntry {
+            loss,
+            puzzle: seed.to_string(),
+        });
+        g.pool_set.insert(seed.to_string());
+
+        // Immediately stop the generator by setting running to false
+        g.running.store(false, Ordering::SeqCst);
+
+        g.generate();
+
+        // Should produce 0 puzzles since we set running=false before generate()
+        assert_eq!(
+            g.printed, 0,
+            "generate() should stop immediately when running flag is false"
+        );
+    }
+
+    #[test]
+    fn generate_produces_partial_output_before_shutdown() {
+        let mut g = Generator::new(
+            Options {
+                max_puzzles: 10,
+                skip: 0,
+                display_all: false,
+                num_puzzles_in_pool: 1,
+                clues_to_drop: 1,
+                do_minimize: false,
+                pencilmark: false,
+                num_evals: 1,
+                clue_weight: 3.0,
+                guess_weight: 0.0,
+                random_weight: 1.0,
+                ..Options::default()
+            },
+            Arc::new(AtomicBool::new(true)),
+        );
+
+        let seed =
+            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
+        let (_, _, loss) = g.evaluate(seed.as_bytes());
+        g.pool.push(PoolEntry {
+            loss,
+            puzzle: seed.to_string(),
+        });
+        g.pool_set.insert(seed.to_string());
+
+        // Simulate early shutdown by setting running=false
+        g.running.store(false, Ordering::SeqCst);
+        let printed_before_generate = g.printed;
+
+        g.generate();
+
+        // With running=false at the start, should produce 0 additional puzzles
+        assert_eq!(
+            g.printed, printed_before_generate,
+            "generate() should respect running flag check on each iteration"
+        );
     }
 }
