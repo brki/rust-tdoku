@@ -5,8 +5,8 @@
 
 use crate::harness_util::*;
 
-const N_NORMAL: usize = 14;
-const N_CHAOS: usize = 6;
+const N_NORMAL: usize = 16;
+const N_CHAOS: usize = 8;
 const N_PROFILES: usize = N_NORMAL + N_CHAOS;
 
 pub fn process(data: &[u8]) {
@@ -24,7 +24,23 @@ pub fn process(data: &[u8]) {
     // ── chaos profiles: raw bytes as CLI args / puzzle data ──────
     if profile >= N_NORMAL {
         let raw = bytes_to_arg(payload);
-        let (args, stdin_data) = match profile - N_NORMAL {
+        let chaos_idx = profile - N_NORMAL;
+
+        // --find-all profiles (6–7): use a shorter timeout because exhaustive
+        // search can be very slow on puzzles with few givens.
+        if chaos_idx >= 6 {
+            let args: Vec<&str> = if chaos_idx == 6 {
+                vec!["--find-all"]
+            } else {
+                vec!["--find-all", "--display-multiple-solutions"]
+            };
+            let stdin_data = bytes_to_puzzle(payload, PuzzleVariant::Vanilla);
+            let result = run_binary(&bin, &args, &stdin_data, 10, data);
+            crash_if_bad(&result, true, true);
+            return;
+        }
+
+        let (args, stdin_data) = match chaos_idx {
             // Raw bytes as puzzle (vanilla-length).
             0 => (vec![], bytes_to_puzzle(payload, PuzzleVariant::Vanilla)),
             // Raw bytes as puzzle + raw bytes as -l value.
@@ -87,6 +103,9 @@ pub fn process(data: &[u8]) {
         7 => (vec!["--pretty", "--stats"], PuzzleVariant::Vanilla),
         8 => (vec!["-l", "2", "-c", "-p"], PuzzleVariant::Pencilmark),
         9 => (vec!["-l", "99999999999999999999"], PuzzleVariant::Vanilla),
+        // -- display-multiple-solutions profiles --
+        14 => (vec!["--display-multiple-solutions"], PuzzleVariant::Vanilla),
+        15 => (vec!["--display-multiple-solutions", "-l", "2"], PuzzleVariant::Vanilla),
         _ => (vec!["-s", "nonexistent"], PuzzleVariant::Vanilla),
     };
 
