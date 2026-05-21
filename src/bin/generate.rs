@@ -950,7 +950,13 @@ fn main() {
     let mut generator = Generator::new(options);
     match pattern_file {
         None => generator.init_empty(),
-        Some(ref path) => generator.load(path),
+        Some(ref path) => {
+            generator.load(path);
+            if generator.pool.is_empty() {
+                eprintln!("error: pattern file '{}' contains no valid puzzles", path);
+                std::process::exit(1);
+            }
+        }
     }
     generator.generate();
 }
@@ -1090,6 +1096,28 @@ mod tests {
     fn default_skip_is_zero() {
         let opts = Options::default();
         assert_eq!(opts.skip, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // empty pattern file
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn load_empty_file_leaves_pool_empty() {
+        let tmp = std::env::temp_dir().join("rdoku_test_empty_pattern.txt");
+        std::fs::write(&tmp, b"").expect("create temp file");
+        let path = tmp.to_str().unwrap();
+
+        // open_regular_file must reject a 0-byte file
+        let result = rdoku::util::open_regular_file(path);
+        let _ = std::fs::remove_file(&tmp);
+        assert!(result.is_err(), "expected error for 0-byte file");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("empty"),
+            "error message should mention 'empty': {}",
+            msg
+        );
     }
 
     #[test]

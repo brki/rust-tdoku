@@ -12,6 +12,9 @@ use rand::rngs::SmallRng;
 /// is not a regular file, or cannot be opened.
 pub fn open_regular_file(path: &str) -> Result<std::io::BufReader<std::fs::File>, String> {
     match std::fs::metadata(path) {
+        Ok(m) if m.is_file() && m.len() == 0 => {
+            Err(format!("'{}' is empty (0 bytes)", path))
+        }
         Ok(m) if m.is_file() => std::fs::File::open(path)
             .map(std::io::BufReader::new)
             .map_err(|e| format!("cannot open '{}': {}", path, e)),
