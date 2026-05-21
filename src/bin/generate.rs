@@ -10,6 +10,8 @@
 //!
 //! Run with `-h` for full usage, including difficulty-tuning guidance.
 
+const VERSION: &str = "0.1.0";
+
 use rdoku::util::Util;
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -775,6 +777,9 @@ fn main() {
             i += 1;
         } else if arg == "-h" || arg == "--help" {
             print_usage();
+            std::process::exit(0);
+        } else if arg == "--version" {
+            println!("generate {}", VERSION);
             std::process::exit(0);
         } else if arg == "--skip" {
             i += 1;
