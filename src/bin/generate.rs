@@ -136,15 +136,14 @@ impl Generator {
     }
 
     fn load(&mut self, filename: &str) {
-        let file = match std::fs::File::open(filename) {
-            Ok(f) => f,
+        let reader = match rdoku::util::open_regular_file(filename) {
+            Ok(r) => r,
             Err(e) => {
-                eprintln!("Error opening {}: {}", filename, e);
+                eprintln!("error: {}", e);
                 std::process::exit(1);
             }
         };
         let puzzle_size = if self.options.pencilmark { 729 } else { 81 };
-        let reader = std::io::BufReader::new(file);
         let mut skipped_invalid = 0usize;
         for line in reader.lines() {
             let line = match line {

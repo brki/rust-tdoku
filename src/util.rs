@@ -6,6 +6,20 @@
 use rand::prelude::*;
 use rand::rngs::SmallRng;
 
+/// Open a path that must be a regular file, returning a buffered reader.
+///
+/// Returns `Err` with a human-readable message if the path does not exist,
+/// is not a regular file, or cannot be opened.
+pub fn open_regular_file(path: &str) -> Result<std::io::BufReader<std::fs::File>, String> {
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => std::fs::File::open(path)
+            .map(std::io::BufReader::new)
+            .map_err(|e| format!("cannot open '{}': {}", path, e)),
+        Ok(_) => Err(format!("'{}' is not a regular file", path)),
+        Err(e) => Err(format!("cannot access '{}': {}", path, e)),
+    }
+}
+
 /// Wraps a seeded RNG and provides Sudoku-specific permutation helpers.
 pub struct Util {
     rng: SmallRng,
