@@ -51,11 +51,18 @@ println!("{solution}");
 cargo run --release --bin solve -- [OPTIONS] [puzzle_file ...]
 
 Options:
-  -l <limit>    Max solutions to count per puzzle (default: 1; use 2 to check uniqueness)
+  -l <limit>    Max solutions to count per puzzle (default: 1; use 2 to check uniqueness;
+                use 0 to count all — capped at 10 for puzzles with < 17 clues unless
+                --find-all is also set)
   -c            Count-only mode: output count and guesses, not the solution string
   -p            Input is pencilmark format (729 chars per puzzle)
   --pretty      Print each solution as an ASCII art grid
   --stats       Print a summary (total puzzles, solved, guesses, rate) to stderr
+  --find-all    Count all solutions without the safety limit (suppresses the low-clue
+                warning; warning: can be extremely slow for under-constrained puzzles)
+  --display-multiple-solutions
+                When limit > 1, print each solution on its own line before the summary
+                line. Always uses the SIMD solver; guess counts are reported as 0.
   -s <solver>   Solver to use: simd (default) | scc | basic
   -h            Full usage and examples
 ```
@@ -111,9 +118,15 @@ Generation control:
 
 Output control:
   -l <limit>          Stop after this many puzzles. Default: unlimited
+      --skip <n>      Skip the first n puzzles that would have been printed (useful for
+                      discarding early, less-diverse outputs while the pool warms up).
+                      Must be less than -l when -l is specified. Default: 0
   -a [0|1]            1 = print all evaluated puzzles; 0 = pool-accepted only. Default: 0
   -p [0|1]            1 = pencilmark format (729 chars); 0 = vanilla (81 chars). Default: 1
   --pretty            Print each puzzle as an ASCII art grid before the one-line output
+  -s, --solution      Append the unique solution (81-char solved grid) to each output line
+  -j, --json          Output each puzzle as a JSON object (one per line) instead of plain
+                      text. When combined with --pretty, includes ASCII art as a field.
   -h                  Full usage, output format, difficulty tuning guide, and examples
 ```
 
