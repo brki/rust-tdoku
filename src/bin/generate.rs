@@ -354,8 +354,18 @@ impl Generator {
 
     fn generate(&mut self) {
         let puzzle_size = if self.options.pencilmark { 729 } else { 81 };
+        // Run until we have accepted (and counted) max_puzzles entries.
+        // "accepted" includes both skipped and printed puzzles; skip just
+        // controls visibility, not the total count.  Previously the outer
+        // loop ran max_puzzles *iterations*, which meant a single `continue`
+        // (constrain failure, duplicate, or loss > worst) could exhaust the
+        // budget before any puzzle was printed.
+        let target = self.options.max_puzzles;
 
-        for _ in 0..self.options.max_puzzles {
+        loop {
+            if self.printed >= target {
+                break;
+            }
             if self.pool.is_empty() {
                 break;
             }
@@ -1303,5 +1313,79 @@ mod tests {
         puzzle[79] = b'9';
         puzzle[80] = b'9';
         assert!(!g.is_valid_puzzle(&puzzle));
+    }
+
+    // ------------------------------------------------------------------
+    // generate() loop termination — regression test for the bug where the
+    // outer loop ran max_puzzles *iterations* instead of running until
+    // max_puzzles puzzles were *printed*.  With a seed-file pool (entries
+    // have finite loss rather than f64::MAX), the first iteration could be
+    // discarded (duplicate check, constrain failure, or loss > worst_loss),
+    // leaving printed == 0 even with -l 1.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn limit_one_with_seeded_pool_produces_exactly_one_puzzle() {
+        let mut g = Generator::new(Options {
+            max_puzzles: 1,
+            skip: 0,
+            display_all: false,
+            num_puzzles_in_pool: 5,
+            clues_to_drop: 1,
+            do_minimize: false,
+            pencilmark: false,
+            num_evals: 1,
+            clue_weight: 3.0,
+            guess_weight: 0.0,
+            random_weight: 1.0,
+            ..Options::default()
+        });
+        let seed =
+            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
+        // Simulate what load() does: evaluate the seed and push it into the pool.
+        let (_, _, loss) = g.evaluate(seed.as_bytes());
+        g.pool.push(PoolEntry {
+            loss,
+            puzzle: seed.to_string(),
+        });
+        g.pool_set.insert(seed.to_string());
+
+        g.generate();
+
+        assert_eq!(
+            g.printed, 1,
+            "generate() should print exactly 1 puzzle when -l 1 is given, \
+             even when the pool is seeded with finite-loss entries"
+        );
+    }
+
+    #[test]
+    fn limit_three_with_seeded_pool_produces_exactly_three_puzzles() {
+        let mut g = Generator::new(Options {
+            max_puzzles: 3,
+            skip: 0,
+            display_all: false,
+            num_puzzles_in_pool: 5,
+            clues_to_drop: 1,
+            do_minimize: false,
+            pencilmark: false,
+            num_evals: 1,
+            clue_weight: 3.0,
+            guess_weight: 0.0,
+            random_weight: 1.0,
+            ..Options::default()
+        });
+        let seed =
+            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
+        let (_, _, loss) = g.evaluate(seed.as_bytes());
+        g.pool.push(PoolEntry {
+            loss,
+            puzzle: seed.to_string(),
+        });
+        g.pool_set.insert(seed.to_string());
+
+        g.generate();
+
+        assert_eq!(g.printed, 3);
     }
 }
