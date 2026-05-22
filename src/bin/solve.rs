@@ -3,8 +3,6 @@
 //! Reads puzzles one per line and writes results to stdout.
 //! Run with `-h` for full usage.
 
-const VERSION: &str = "0.1.0";
-
 use std::io::{self, BufRead, Write};
 use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -254,7 +252,7 @@ fn main() {
                 std::process::exit(0);
             }
             "--version" => {
-                println!("solve {}", VERSION);
+                println!("solve {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "-c" => {
@@ -437,6 +435,9 @@ fn main() {
                 total_solved += 1;
             }
             total_guesses += guesses as u64;
+        }
+        if !running.load(Ordering::SeqCst) {
+            break;
         }
     }
 

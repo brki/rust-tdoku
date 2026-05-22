@@ -10,8 +10,6 @@
 //!
 //! Run with `-h` for full usage, including difficulty-tuning guidance.
 
-const VERSION: &str = "0.1.0";
-
 use rdoku::util::Util;
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -779,7 +777,7 @@ fn main() {
             print_usage();
             std::process::exit(0);
         } else if arg == "--version" {
-            println!("generate {}", VERSION);
+            println!("generate {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         } else if arg == "--skip" {
             i += 1;
@@ -962,9 +960,11 @@ fn main() {
 
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
-    ctrlc::set_handler(move || {
-        running_clone.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    
+    // Set up signal handlers for SIGINT (Ctrl-C) and SIGTERM (kill)
+    // to gracefully shut down the generator.
+    let _ = signal_hook::flag::register(signal_hook::consts::SIGINT, running_clone.clone());
+    let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, running_clone);
 
     let mut generator = Generator::new(options, running);
     match pattern_file {
