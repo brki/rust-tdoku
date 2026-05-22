@@ -960,11 +960,9 @@ fn main() {
 
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
-    
-    // Set up signal handlers for SIGINT (Ctrl-C) and SIGTERM (kill)
-    // to gracefully shut down the generator.
-    let _ = signal_hook::flag::register(signal_hook::consts::SIGINT, running_clone.clone());
-    let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, running_clone);
+    ctrlc::set_handler(move || {
+        running_clone.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
 
     let mut generator = Generator::new(options, running);
     match pattern_file {
