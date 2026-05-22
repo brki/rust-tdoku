@@ -4,9 +4,9 @@
 //! Run with `-h` for full usage.
 
 use std::io::{self, BufRead, Write};
-use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 struct Options {
     limit: usize,
@@ -332,7 +332,8 @@ fn main() {
     let running_clone = Arc::clone(&running);
     ctrlc::set_handler(move || {
         running_clone.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());

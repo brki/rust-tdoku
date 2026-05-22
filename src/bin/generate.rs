@@ -182,6 +182,25 @@ impl Generator {
                 if skipped_invalid == 1 { "" } else { "s" }
             );
         }
+
+        // Pad the pool up to num_puzzles_in_pool by cycling through the loaded
+        // puzzles.  Without this, a small seed file (e.g. 10 lines) leaves the
+        // pool orders of magnitude smaller than -n requests, which causes the
+        // hill-climber to converge almost immediately and then make virtually no
+        // progress (loss threshold too tight → acceptance rate → 0 → gets slower
+        // and slower as each output requires exponentially more loop iterations).
+        let target = self.options.num_puzzles_in_pool;
+        if self.pool.len() < target {
+            let seeds: Vec<String> = self.pool.iter().map(|e| e.puzzle.clone()).collect();
+            let mut idx = 0usize;
+            while self.pool.len() < target {
+                self.pool.push(PoolEntry {
+                    loss: f64::MAX,
+                    puzzle: seeds[idx % seeds.len()].clone(),
+                });
+                idx += 1;
+            }
+        }
     }
 
     /// Quick structural check: reject puzzles with duplicate digits in any
@@ -962,7 +981,8 @@ fn main() {
     let running_clone = Arc::clone(&running);
     ctrlc::set_handler(move || {
         running_clone.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     let mut generator = Generator::new(options, running);
     match pattern_file {
@@ -1374,20 +1394,23 @@ mod tests {
 
     #[test]
     fn limit_one_with_seeded_pool_produces_exactly_one_puzzle() {
-        let mut g = Generator::new(Options {
-            max_puzzles: 1,
-            skip: 0,
-            display_all: false,
-            num_puzzles_in_pool: 5,
-            clues_to_drop: 1,
-            do_minimize: false,
-            pencilmark: false,
-            num_evals: 1,
-            clue_weight: 3.0,
-            guess_weight: 0.0,
-            random_weight: 1.0,
-            ..Options::default()
-        }, Arc::new(AtomicBool::new(true)));
+        let mut g = Generator::new(
+            Options {
+                max_puzzles: 1,
+                skip: 0,
+                display_all: false,
+                num_puzzles_in_pool: 5,
+                clues_to_drop: 1,
+                do_minimize: false,
+                pencilmark: false,
+                num_evals: 1,
+                clue_weight: 3.0,
+                guess_weight: 0.0,
+                random_weight: 1.0,
+                ..Options::default()
+            },
+            Arc::new(AtomicBool::new(true)),
+        );
         let seed =
             ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
         // Simulate what load() does: evaluate the seed and push it into the pool.
@@ -1409,20 +1432,23 @@ mod tests {
 
     #[test]
     fn limit_three_with_seeded_pool_produces_exactly_three_puzzles() {
-        let mut g = Generator::new(Options {
-            max_puzzles: 3,
-            skip: 0,
-            display_all: false,
-            num_puzzles_in_pool: 5,
-            clues_to_drop: 1,
-            do_minimize: false,
-            pencilmark: false,
-            num_evals: 1,
-            clue_weight: 3.0,
-            guess_weight: 0.0,
-            random_weight: 1.0,
-            ..Options::default()
-        }, Arc::new(AtomicBool::new(true)));
+        let mut g = Generator::new(
+            Options {
+                max_puzzles: 3,
+                skip: 0,
+                display_all: false,
+                num_puzzles_in_pool: 5,
+                clues_to_drop: 1,
+                do_minimize: false,
+                pencilmark: false,
+                num_evals: 1,
+                clue_weight: 3.0,
+                guess_weight: 0.0,
+                random_weight: 1.0,
+                ..Options::default()
+            },
+            Arc::new(AtomicBool::new(true)),
+        );
         let seed =
             ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
         let (_, _, loss) = g.evaluate(seed.as_bytes());
@@ -1445,7 +1471,7 @@ mod tests {
     fn generate_stops_when_running_flag_is_false() {
         let mut g = Generator::new(
             Options {
-                max_puzzles: 100,  // Request many puzzles
+                max_puzzles: 100, // Request many puzzles
                 skip: 0,
                 display_all: false,
                 num_puzzles_in_pool: 1,
