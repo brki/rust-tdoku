@@ -1,0 +1,28 @@
+{
+  "profiles": [
+    {
+      "name": "default",
+      "count": 2,
+      "warmup": 10000,
+      "pool_size": 500,
+      "clue_weight": 1.0,
+      "guess_weight": 0.5,
+      "random_weight": 1.0,
+      "clues_to_drop": 3,
+      "num_evals": 10,
+      "pencilmark": false
+    },
+    {
+      "name": "hard",
+      "count": 2,
+      "warmup": 10000,
+      "pool_size": 500,
+      "clue_weight": 0.0,
+      "guess_weight": 1.0,
+      "random_weight": 0.5,
+      "clues_to_drop": 5,
+      "num_evals": 20,
+      "pencilmark": false
+    }
+  ]
+}

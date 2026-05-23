@@ -1,4 +1,4 @@
-//! Puzzle generator — port of `tdoku/src/generate.cc`.
+//! Puzzle generator CLI — thin wrapper around [`rdoku::generator::Generator`].
 //!
 //! Generates Sudoku puzzles using a pool-based hill-climbing search.
 //! Each iteration picks a puzzle from the pool, randomly drops some clues,
@@ -10,599 +10,77 @@
 //!
 //! Run with `-h` for full usage, including difficulty-tuning guidance.
 
-use rdoku::util::Util;
-use std::collections::HashSet;
-use std::io::BufRead;
+use rdoku::generator::{format_pretty, format_puzzle_json, GeneratedPuzzle, GeneratorOptions};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-struct Options {
+// ── CLI options ────────────────────────────────────────────────────────────
+
+struct CliOptions {
+    /// Stop after this many puzzles have been accepted (and counted, even if skipped).
     max_puzzles: u64,
+    /// Skip the first N puzzles that would have been printed.
     skip: u64,
-    clue_weight: f64,
-    guess_weight: f64,
-    random_weight: f64,
-    clues_to_drop: usize,
-    num_evals: usize,
-    num_puzzles_in_pool: usize,
+    /// Print every evaluated puzzle, not just those accepted into the pool.
     display_all: bool,
-    do_minimize: bool,
-    pencilmark: bool,
+    /// Print each puzzle as an ASCII art grid.
     pretty: bool,
+    /// Output as JSON objects.
     json: bool,
+    /// Append the unique solution to each output line.
     solution: bool,
+    /// Generator tuning parameters.
+    gen: GeneratorOptions,
+    /// Optional seed file.
+    pattern_file: Option<String>,
 }
 
-impl Default for Options {
+impl Default for CliOptions {
     fn default() -> Self {
         Self {
             max_puzzles: u64::MAX,
             skip: 0,
-            clue_weight: 1.0,
-            guess_weight: 0.5,
-            random_weight: 1.0,
-            clues_to_drop: 3,
-            num_evals: 10,
-            num_puzzles_in_pool: 500,
             display_all: false,
-            do_minimize: true,
-            pencilmark: true,
             pretty: false,
             json: false,
             solution: false,
+            gen: GeneratorOptions::default(),
+            pattern_file: None,
         }
     }
 }
 
-#[derive(Clone)]
-struct PoolEntry {
-    loss: f64,
-    puzzle: String,
-}
+// ── output helpers ─────────────────────────────────────────────────────────
 
-struct Generator {
-    options: Options,
-    util: Util,
-    pool: Vec<PoolEntry>,
-    pool_set: HashSet<String>,
-    /// How many puzzles have been printed (or would have been printed if not
-    /// skipped).  Used to implement `--skip`.
-    printed: u64,
-    /// Shared signal flag for graceful shutdown on Ctrl-C.
-    running: Arc<AtomicBool>,
-}
-
-impl Generator {
-    fn new(options: Options, running: Arc<AtomicBool>) -> Self {
-        Self {
-            options,
-            util: Util::new(),
-            pool: Vec::new(),
-            pool_set: HashSet::new(),
-            printed: 0,
-            running,
-        }
-    }
-
-    fn init_empty(&mut self) {
-        // Seed the pool with a minimal puzzle rather than the empty/full-candidate grid.
-        // Starting from a completely unconstrained grid causes the SIMD DPLL solver to
-        // recurse ~80 000+ levels deep (it needs to branch on almost every digit placement),
-        // which overflows the thread stack.  The basic backtracking solver only recurses
-        // ≤81 levels (one per cell), so it's safe to use here for the first seed.
-        let initial_seed = self.make_seed();
-        for _ in 0..self.options.num_puzzles_in_pool {
-            self.pool.push(PoolEntry {
-                loss: f64::MAX,
-                puzzle: initial_seed.clone(),
-            });
-        }
-    }
-
-    /// Generate one minimal seed puzzle to prime the pool.
-    ///
-    /// Uses the basic cell-level solver (max recursion depth 81) to produce a complete
-    /// solution from the empty grid, then minimizes it with the SIMD generator.  The
-    /// resulting puzzle has 20–30 clues (vanilla) or a comparable pencilmark encoding,
-    /// which is well within the SIMD solver's efficient operating range for subsequent
-    /// `constrain` and `evaluate` calls.
-    fn make_seed(&mut self) -> String {
-        // Solve the empty vanilla grid with the basic solver (safe depth ≤81).
-        let (count, sol_bytes, _) = rdoku::solver_basic::solve(&[b'.'; 81], 1, 0);
-        if count == 0 {
-            // Should never happen for the empty grid; fall back gracefully.
-            return if self.options.pencilmark {
-                "123456789".repeat(81)
-            } else {
-                ".".repeat(81)
-            };
-        }
-
-        if self.options.pencilmark {
-            // Convert the complete solution to a "fully determined" pencilmark string
-            // (each cell retains only its unique digit), then minimize.
-            let mut pm = Vec::with_capacity(729);
-            #[allow(clippy::needless_range_loop)]
-            for cell in 0..81 {
-                let digit = sol_bytes[cell];
-                for d in 0u8..9 {
-                    pm.push(if b'1' + d == digit { digit } else { b'.' });
-                }
-            }
-            let mut pm_str = String::from_utf8(pm).expect("valid ascii");
-            rdoku::minimize(true, false, &mut pm_str);
-            pm_str
-        } else {
-            let mut sol_str = String::from_utf8(sol_bytes.to_vec()).expect("valid ascii");
-            // Minimize the complete solution to get a proper minimal vanilla puzzle.
-            rdoku::minimize(false, false, &mut sol_str);
-            sol_str
-        }
-    }
-
-    fn load(&mut self, filename: &str) {
-        let reader = match rdoku::util::open_regular_file(filename) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error: {}", e);
-                std::process::exit(1);
-            }
-        };
-        let puzzle_size = if self.options.pencilmark { 729 } else { 81 };
-        let mut skipped_invalid = 0usize;
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let puzzle: String = line.chars().take(puzzle_size).collect();
-            if puzzle.len() < puzzle_size {
-                continue;
-            }
-            // Quick structural check: skip puzzles with duplicate digits in a
-            // row, column, or box before feeding them to the solver.
-            if !self.is_valid_puzzle(puzzle.as_bytes()) {
-                skipped_invalid += 1;
-                continue;
-            }
-            let (_, _, loss) = self.evaluate(puzzle.as_bytes());
-            self.pool.push(PoolEntry {
-                loss,
-                puzzle: puzzle.clone(),
-            });
-            self.pool_set.insert(puzzle);
-        }
-        if skipped_invalid > 0 {
-            eprintln!(
-                "skipped {} invalid puzzle{} (duplicate digit in row, column, or box)",
-                skipped_invalid,
-                if skipped_invalid == 1 { "" } else { "s" }
-            );
-        }
-
-        // Pad the pool up to num_puzzles_in_pool by cycling through the loaded
-        // puzzles.  Without this, a small seed file (e.g. 10 lines) leaves the
-        // pool orders of magnitude smaller than -n requests, which causes the
-        // hill-climber to converge almost immediately and then make virtually no
-        // progress (loss threshold too tight → acceptance rate → 0 → gets slower
-        // and slower as each output requires exponentially more loop iterations).
-        let target = self.options.num_puzzles_in_pool;
-        if self.pool.len() < target {
-            let seeds: Vec<String> = self.pool.iter().map(|e| e.puzzle.clone()).collect();
-            let mut idx = 0usize;
-            while self.pool.len() < target {
-                self.pool.push(PoolEntry {
-                    loss: f64::MAX,
-                    puzzle: seeds[idx % seeds.len()].clone(),
-                });
-                idx += 1;
-            }
-        }
-    }
-
-    /// Quick structural check: reject puzzles with duplicate digits in any
-    /// row, column, or 3×3 box.  The full solver also catches these, but it
-    /// may spend a long time exploring dead ends first — this fast filter
-    /// prevents that.
-    fn is_valid_puzzle(&self, puzzle: &[u8]) -> bool {
-        if self.options.pencilmark {
-            // For pencilmark (729 chars), a quick row/col/box duplicate check
-            // is less meaningful because a cell may have multiple candidates.
-            // Rely on the solver's own validation.
-            return true;
-        }
-        // Vanilla format (81 chars): each cell is a digit '1'..'9' or '.'
-        if puzzle.len() < 81 {
-            return false;
-        }
-
-        // Check each row for duplicate digits
-        for row in 0..9 {
-            let mut seen = 0u16;
-            for col in 0..9 {
-                let c = puzzle[row * 9 + col];
-                if c != b'.' {
-                    let bit = 1u16 << (c - b'1');
-                    if seen & bit != 0 {
-                        return false; // duplicate digit in row
-                    }
-                    seen |= bit;
-                }
-            }
-        }
-
-        // Check each column for duplicate digits
-        for col in 0..9 {
-            let mut seen = 0u16;
-            for row in 0..9 {
-                let c = puzzle[row * 9 + col];
-                if c != b'.' {
-                    let bit = 1u16 << (c - b'1');
-                    if seen & bit != 0 {
-                        return false; // duplicate digit in column
-                    }
-                    seen |= bit;
-                }
-            }
-        }
-
-        // Check each 3×3 box for duplicate digits
-        for box_row in 0..3 {
-            for box_col in 0..3 {
-                let mut seen = 0u16;
-                for r in 0..3 {
-                    for c in 0..3 {
-                        let idx = (box_row * 3 + r) * 9 + (box_col * 3 + c);
-                        let ch = puzzle[idx];
-                        if ch != b'.' {
-                            let bit = 1u16 << (ch - b'1');
-                            if seen & bit != 0 {
-                                return false; // duplicate digit in box
-                            }
-                            seen |= bit;
-                        }
-                    }
-                }
-            }
-        }
-
-        true
-    }
-
-    fn has_unique_solution(&self, puzzle: &[u8]) -> bool {
-        // Fast structural validity check first
-        if !self.is_valid_puzzle(puzzle) {
-            return false;
-        }
-        let input = match std::str::from_utf8(puzzle) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        let (count, _, _) = rdoku::solve_sudoku(input, 2, 0);
-        count == 1
-    }
-
-    fn num_clues(&self, puzzle: &[u8]) -> usize {
-        if self.options.pencilmark {
-            puzzle.iter().filter(|&&c| c == b'.').count()
-        } else {
-            puzzle.iter().filter(|&&c| c != b'.').count()
-        }
-    }
-
-    fn evaluate(&mut self, puzzle: &[u8]) -> (usize, f64, f64) {
-        let num_clues = self.num_clues(puzzle);
-
-        let mean_log_guesses = if self.options.num_evals > 0 {
-            let mut eval = puzzle.to_vec();
-            let mut sum = 0.0f64;
-            for _ in 0..self.options.num_evals {
-                self.util.permute_sudoku(&mut eval, self.options.pencilmark);
-                let input = std::str::from_utf8(&eval).unwrap_or("");
-                let (_, _, guesses) = rdoku::solve_sudoku(input, 1, 0);
-                sum += (guesses as f64 + 1.0).ln();
-            }
-            sum / self.options.num_evals as f64
-        } else {
-            0.0
-        };
-
-        let loss = if self.has_unique_solution(puzzle) {
-            num_clues as f64 * self.options.clue_weight
-                - (mean_log_guesses * self.options.guess_weight).exp()
-                + self.util.random_double() * self.options.random_weight
-        } else {
-            f64::MAX
-        };
-
-        (num_clues, mean_log_guesses.exp(), loss)
-    }
-
-    fn worst_idx(&self) -> Option<usize> {
-        self.pool
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.loss.total_cmp(&b.loss))
-            .map(|(i, _)| i)
-    }
-
-    fn worst_loss(&self) -> f64 {
-        self.pool
-            .iter()
-            .map(|e| e.loss)
-            .reduce(|a, b| if a.total_cmp(&b).is_ge() { a } else { b })
-            .unwrap_or(f64::NEG_INFINITY)
-    }
-
-    fn print_puzzle(
-        &self,
-        puzzle: &str,
-        num_clues: usize,
-        geo_mean_guesses: f64,
-        loss: f64,
-        solution: Option<&str>,
-    ) {
-        if self.options.json {
-            let obj = format_puzzle_json(
-                puzzle,
-                num_clues,
-                geo_mean_guesses,
-                loss,
-                if self.options.pretty {
-                    Some(format_pretty(puzzle, self.options.pencilmark))
-                } else {
-                    None
-                },
-                solution,
-            );
-            println!("{}", serde_json::to_string(&obj).unwrap());
-        } else {
-            if self.options.pretty {
-                print!("{}", format_pretty(puzzle, self.options.pencilmark));
-            }
-            match solution {
-                Some(sol) => println!(
-                    "{} {} {:.1} {:.2} {}",
-                    puzzle, num_clues, geo_mean_guesses, loss, sol
-                ),
-                None => println!(
-                    "{} {} {:.1} {:.2}",
-                    puzzle, num_clues, geo_mean_guesses, loss
-                ),
-            }
-        }
-    }
-
-    fn generate(&mut self) {
-        let puzzle_size = if self.options.pencilmark { 729 } else { 81 };
-        // Run until we have accepted (and counted) max_puzzles entries.
-        // "accepted" includes both skipped and printed puzzles; skip just
-        // controls visibility, not the total count.  Previously the outer
-        // loop ran max_puzzles *iterations*, which meant a single `continue`
-        // (constrain failure, duplicate, or loss > worst) could exhaust the
-        // budget before any puzzle was printed.
-        let target = self.options.max_puzzles;
-
-        loop {
-            if !self.running.load(Ordering::SeqCst) {
-                break;
-            }
-            if self.printed >= target {
-                break;
-            }
-            if self.pool.is_empty() {
-                break;
-            }
-
-            // pick a random puzzle from the pool
-            let which = (self.util.random_uint() as usize) % self.pool.len();
-            let pattern_puzzle = self.pool[which].puzzle.clone();
-            let mut puzzle: Vec<u8> = pattern_puzzle.bytes().take(puzzle_size).collect();
-
-            // randomly drop clues to unconstrain the puzzle
-            if self.options.clues_to_drop > 0 {
-                let perm = self.util.permutation(puzzle_size);
-                let mut dropped = 0;
-                for &j in &perm {
-                    if dropped == self.options.clues_to_drop {
-                        break;
-                    }
-                    if self.options.pencilmark {
-                        // for pencilmark a clue is an elimination (a '.')
-                        if puzzle[j] == b'.' {
-                            puzzle[j] = b'1' + (j % 9) as u8;
-                            dropped += 1;
-                        }
-                    } else {
-                        // for vanilla a clue is a placed digit (not '.')
-                        if puzzle[j] != b'.' {
-                            puzzle[j] = b'.';
-                            dropped += 1;
-                        }
-                    }
-                }
-
-                // re-complete to a unique solution
-                let mut puzzle_str = String::from_utf8_lossy(&puzzle).into_owned();
-                if !rdoku::constrain(self.options.pencilmark, &mut puzzle_str) {
-                    continue;
-                }
-                if self.options.do_minimize {
-                    rdoku::minimize(self.options.pencilmark, false, &mut puzzle_str);
-                }
-                puzzle = puzzle_str.into_bytes();
-            }
-
-            // evaluate difficulty
-            let puzzle_bytes = &puzzle[..puzzle_size.min(puzzle.len())];
-            let (num_clues, geo_mean_guesses, loss) = self.evaluate(puzzle_bytes);
-
-            let puzzle_str = String::from_utf8_lossy(puzzle_bytes).into_owned();
-
-            // skip if duplicate of the pattern it was drawn from, or already in pool
-            if self.options.clues_to_drop > 0 {
-                let pattern_cmp = &pattern_puzzle[..puzzle_size.min(pattern_puzzle.len())];
-                if puzzle_str == pattern_cmp {
-                    continue;
-                }
-                if self.pool_set.contains(&puzzle_str) {
-                    continue;
-                }
-            }
-
-            // Determine whether this puzzle will be printed (not skipped).
-            let will_print = self.printed >= self.options.skip;
-
-            // Resolve the solution only when it will actually be printed.
-            let solution: Option<String> = if self.options.solution && will_print {
-                let (_, sol, _) = rdoku::solve_sudoku(&puzzle_str, 1, 0);
-                Some(sol)
-            } else {
-                None
-            };
-
-            if self.options.display_all {
-                if will_print {
-                    self.print_puzzle(
-                        &puzzle_str,
-                        num_clues,
-                        geo_mean_guesses,
-                        loss,
-                        solution.as_deref(),
-                    );
-                }
-                self.printed += 1;
-            }
-
-            // skip if the puzzle's loss is worse than the current worst in the pool
-            if loss > self.worst_loss() {
-                continue;
-            }
-
-            if !self.options.display_all {
-                if will_print {
-                    self.print_puzzle(
-                        &puzzle_str,
-                        num_clues,
-                        geo_mean_guesses,
-                        loss,
-                        solution.as_deref(),
-                    );
-                }
-                self.printed += 1;
-            }
-
-            // add the new puzzle and evict the worst entry
-            if let Some(worst_idx) = self.worst_idx() {
-                let old = std::mem::replace(
-                    &mut self.pool[worst_idx],
-                    PoolEntry {
-                        loss,
-                        puzzle: puzzle_str.clone(),
-                    },
-                );
-                self.pool_set.remove(&old.puzzle);
-                self.pool_set.insert(puzzle_str);
-            }
-        }
-    }
-}
-
-/// Build a JSON object representing one puzzle output line.
-///
-/// Fields are always present; `pretty` and `solution` are `None` to omit them.
-fn format_puzzle_json(
-    puzzle: &str,
-    num_clues: usize,
-    geo_mean_guesses: f64,
-    loss: f64,
-    pretty: Option<String>,
-    solution: Option<&str>,
-) -> serde_json::Value {
-    let mut obj = serde_json::json!({
-        "puzzle": puzzle,
-        "num_clues": num_clues,
-        "geo_mean_guesses": (geo_mean_guesses * 10.0).round() / 10.0,
-        "loss": (loss * 100.0).round() / 100.0,
-    });
-    if let Some(formatted) = pretty {
-        obj["pretty"] = serde_json::Value::String(formatted);
-    }
-    if let Some(sol) = solution {
-        obj["solution"] = serde_json::Value::String(sol.to_string());
-    }
-    obj
-}
-
-/// Render a puzzle as a human-readable ASCII art grid.
-///
-/// For pencilmark format (729 chars), cells with exactly one remaining candidate
-/// are shown as that digit; cells with multiple candidates are shown as `'.'`.
-/// For vanilla format (81 chars), each character is used directly.
-///
-/// Example output:
-/// ```text
-/// +-------+-------+-------+
-/// | 5 3 . | . 7 . | . . . |
-/// | 6 . . | 1 9 5 | . . . |
-/// | . 9 8 | . . . | . 6 . |
-/// +-------+-------+-------+
-/// | 8 . . | . 6 . | . . 3 |
-/// ...
-/// +-------+-------+-------+
-/// ```
-fn format_pretty(puzzle: &str, pencilmark: bool) -> String {
-    let cells: Vec<u8> = if pencilmark {
-        let bytes = puzzle.as_bytes();
-        (0..81)
-            .map(|cell| {
-                let start = cell * 9;
-                let end = (start + 9).min(bytes.len());
-                let mut found = b'.';
-                let mut count = 0u32;
-                for &b in &bytes[start..end] {
-                    if b != b'.' {
-                        found = b;
-                        count += 1;
-                    }
-                }
-                if count == 1 {
-                    found
-                } else {
-                    b'.'
-                }
-            })
-            .collect()
+fn print_puzzle(p: &GeneratedPuzzle, pretty: bool, json: bool, pencilmark: bool, solution: Option<&str>) {
+    if json {
+        let obj = format_puzzle_json(
+            &p.puzzle,
+            p.num_clues,
+            p.geo_mean_guesses,
+            p.loss,
+            if pretty { Some(format_pretty(&p.puzzle, pencilmark)) } else { None },
+            solution,
+        );
+        println!("{}", serde_json::to_string(&obj).unwrap());
     } else {
-        puzzle.bytes().take(81).collect()
-    };
-
-    let sep = "+-------+-------+-------+";
-    let mut out = String::with_capacity(14 * 26);
-    out.push_str(sep);
-    out.push('\n');
-    for row in 0..9usize {
-        out.push_str("| ");
-        for col in 0..9usize {
-            let c = *cells.get(row * 9 + col).unwrap_or(&b'.') as char;
-            out.push(c);
-            match col {
-                2 | 5 => out.push_str(" | "),
-                8 => {}
-                _ => out.push(' '),
-            }
+        if pretty {
+            print!("{}", format_pretty(&p.puzzle, pencilmark));
         }
-        out.push_str(" |\n");
-        if row == 2 || row == 5 || row == 8 {
-            out.push_str(sep);
-            out.push('\n');
+        match solution {
+            Some(sol) => println!(
+                "{} {} {:.1} {:.2} {}",
+                p.puzzle, p.num_clues, p.geo_mean_guesses, p.loss, sol
+            ),
+            None => println!(
+                "{} {} {:.1} {:.2}",
+                p.puzzle, p.num_clues, p.geo_mean_guesses, p.loss
+            ),
         }
     }
-    out
 }
+
+// ── usage text ────────────────────────────────────────────────────────────
 
 fn print_usage() {
     eprintln!("usage: generate [options] [pattern_file]");
@@ -614,8 +92,8 @@ fn print_usage() {
     eprintln!();
     eprintln!("PUZZLE FORMATS:");
     eprintln!("  Vanilla (81 chars)    One character per cell, row by row.");
-    eprintln!("                        '1'–'9' = given clue, '.' = empty cell.");
-    eprintln!("                        Example: 53..7....6..195....98....6.8...6...34..8.3..");
+    eprintln!(r"                        '1'–'9' = given clue, '.' = empty cell.");
+    eprintln!(r"                        Example: 53..7....6..195....98....6.8...6...34..8.3..");
     eprintln!();
     eprintln!("  Pencilmark (729 chars) One character per candidate, row by row.");
     eprintln!("                        Each cell occupies 9 characters (digits 1–9 in order).");
@@ -728,12 +206,12 @@ fn print_usage() {
     eprintln!("  -s, --solution      Include the unique solution (81-char solved grid) in");
     eprintln!("                      the output. In plain text mode the solution is appended");
     eprintln!("                      as a 5th column. In JSON mode it appears as a");
-    eprintln!("                      \"solution\" field.");
+    eprintln!(r#"                      "solution" field."#);
     eprintln!("  -h                  Display this help message.");
     eprintln!("  -j, --json          Output each puzzle as a JSON object");
     eprintln!("                      (one per line) instead of plain text.");
     eprintln!("                      When combined with --pretty, includes formatted");
-    eprintln!("                      ASCII art in an additional \"pretty\" field.");
+    eprintln!(r#"                      ASCII art in an additional "pretty" field."#);
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("  pattern_file        Optional file of seed puzzles to pre-populate the pool");
@@ -767,8 +245,10 @@ fn print_usage() {
     eprintln!("  generate -p 0 -l 50 my_puzzles.txt");
 }
 
+// ── main ──────────────────────────────────────────────────────────────────
+
 fn main() {
-    let mut options = Options::default();
+    let mut opts = CliOptions::default();
     let args: Vec<String> = std::env::args_os()
         .enumerate()
         .map(|(idx, os)| {
@@ -779,18 +259,17 @@ fn main() {
         })
         .collect();
     let mut i = 1usize;
-    let mut pattern_file: Option<String> = None;
 
     while i < args.len() {
         let arg = &args[i];
         if arg == "--pretty" {
-            options.pretty = true;
+            opts.pretty = true;
             i += 1;
         } else if arg == "--json" || arg == "-j" {
-            options.json = true;
+            opts.json = true;
             i += 1;
         } else if arg == "--solution" || arg == "-s" {
-            options.solution = true;
+            opts.solution = true;
             i += 1;
         } else if arg == "-h" || arg == "--help" {
             print_usage();
@@ -806,7 +285,7 @@ fn main() {
                     std::process::exit(1);
                 }
                 Some(val) => match val.parse::<u64>() {
-                    Ok(v) => options.skip = v,
+                    Ok(v) => opts.skip = v,
                     Err(_) => {
                         eprintln!(
                             "Error: invalid value for --skip: {:?} (expected a non-negative integer).",
@@ -821,7 +300,6 @@ fn main() {
             let ch = arg.chars().nth(1).unwrap();
             i += 1;
             match ch {
-                // flags with required numeric arguments
                 'c' | 'g' | 'r' | 'd' | 'e' | 'l' | 'n' => {
                     let val = match args.get(i) {
                         Some(v) => {
@@ -836,7 +314,7 @@ fn main() {
                     };
                     match ch {
                         'c' => match val.parse::<f64>() {
-                            Ok(v) if v >= 0.0 => options.clue_weight = v,
+                            Ok(v) if v >= 0.0 => opts.gen.clue_weight = v,
                             Ok(v) => {
                                 eprintln!(
                                     "Error: invalid value for -c: {} (must be a non-negative number).",
@@ -853,7 +331,7 @@ fn main() {
                             }
                         },
                         'g' => match val.parse::<f64>() {
-                            Ok(v) if v >= 0.0 => options.guess_weight = v,
+                            Ok(v) if v >= 0.0 => opts.gen.guess_weight = v,
                             Ok(v) => {
                                 eprintln!(
                                     "Error: invalid value for -g: {} (must be a non-negative number).",
@@ -870,7 +348,7 @@ fn main() {
                             }
                         },
                         'r' => match val.parse::<f64>() {
-                            Ok(v) if v >= 0.0 => options.random_weight = v,
+                            Ok(v) if v >= 0.0 => opts.gen.random_weight = v,
                             Ok(v) => {
                                 eprintln!(
                                     "Error: invalid value for -r: {} (must be a non-negative number).",
@@ -887,7 +365,7 @@ fn main() {
                             }
                         },
                         'd' => match val.parse::<usize>() {
-                            Ok(v) => options.clues_to_drop = v,
+                            Ok(v) => opts.gen.clues_to_drop = v,
                             Err(_) => {
                                 eprintln!(
                                     "Error: invalid value for -d: {:?} (expected a non-negative integer).",
@@ -897,7 +375,7 @@ fn main() {
                             }
                         },
                         'e' => match val.parse::<usize>() {
-                            Ok(v) => options.num_evals = v,
+                            Ok(v) => opts.gen.num_evals = v,
                             Err(_) => {
                                 eprintln!(
                                     "Error: invalid value for -e: {:?} (expected a non-negative integer).",
@@ -907,7 +385,7 @@ fn main() {
                             }
                         },
                         'l' => match val.parse::<u64>() {
-                            Ok(v) => options.max_puzzles = v,
+                            Ok(v) => opts.max_puzzles = v,
                             Err(_) => {
                                 eprintln!(
                                     "Error: invalid value for -l: {:?} (expected a positive integer).",
@@ -917,7 +395,7 @@ fn main() {
                             }
                         },
                         'n' => match val.parse::<usize>() {
-                            Ok(v) if v >= 1 => options.num_puzzles_in_pool = v,
+                            Ok(v) if v >= 1 => opts.gen.num_puzzles_in_pool = v,
                             Ok(v) => {
                                 eprintln!(
                                     "Error: invalid value for -n: {} (must be at least 1).",
@@ -936,7 +414,6 @@ fn main() {
                         _ => unreachable!(),
                     }
                 }
-                // flags with optional boolean arguments (consume next arg only if it's "0" or "1")
                 'm' | 'a' | 'p' => {
                     let val = match args.get(i).map(String::as_str) {
                         Some("0") | Some("1") => {
@@ -947,9 +424,9 @@ fn main() {
                         _ => "1",
                     };
                     match ch {
-                        'm' => options.do_minimize = val != "0",
-                        'a' => options.display_all = val != "0",
-                        'p' => options.pencilmark = val != "0",
+                        'm' => opts.gen.do_minimize = val != "0",
+                        'a' => opts.display_all = val != "0",
+                        'p' => opts.gen.pencilmark = val != "0",
                         _ => unreachable!(),
                     }
                 }
@@ -960,7 +437,7 @@ fn main() {
                 }
             }
         } else if !arg.starts_with('-') {
-            pattern_file = Some(arg.clone());
+            opts.pattern_file = Some(arg.clone());
             i += 1;
         } else {
             eprintln!("Unknown argument: {}", arg);
@@ -969,10 +446,10 @@ fn main() {
         }
     }
 
-    if options.max_puzzles != u64::MAX && options.skip >= options.max_puzzles {
+    if opts.max_puzzles != u64::MAX && opts.skip >= opts.max_puzzles {
         eprintln!(
             "Error: --skip ({}) must be less than -l ({}).",
-            options.skip, options.max_puzzles
+            opts.skip, opts.max_puzzles
         );
         std::process::exit(1);
     }
@@ -984,569 +461,41 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let mut generator = Generator::new(options, running);
-    match pattern_file {
+    let mut generator = rdoku::generator::Generator::new(opts.gen.clone(), Arc::clone(&running));
+    match opts.pattern_file.as_deref() {
         None => generator.init_empty(),
-        Some(ref path) => {
+        Some(path) => {
             generator.load(path);
-            if generator.pool.is_empty() {
-                eprintln!("error: pattern file '{}' contains no valid puzzles", path);
-                std::process::exit(1);
-            }
         }
     }
-    generator.generate();
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    let max_puzzles = opts.max_puzzles;
+    let skip = opts.skip;
+    let display_all = opts.display_all;
+    let need_solution = opts.solution;
+    let pretty = opts.pretty;
+    let json = opts.json;
+    let pencilmark = opts.gen.pencilmark;
 
-    // ------------------------------------------------------------------
-    // format_puzzle_json
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn json_has_required_fields() {
-        let obj = format_puzzle_json(
-            ".2.....89.5.7........1.34....4.6.....3.8...1...7...365..1.4.9.....9...3.9.2..1...",
-            25,
-            1.0,
-            24.27,
-            None,
-            None,
-        );
-
-        assert!(obj.is_object());
-        let map = obj.as_object().unwrap();
-        assert!(map.contains_key("puzzle"));
-        assert!(map.contains_key("num_clues"));
-        assert!(map.contains_key("geo_mean_guesses"));
-        assert!(map.contains_key("loss"));
-        // "pretty" and "solution" should be absent when not requested
-        assert!(!map.contains_key("pretty"));
-        assert!(!map.contains_key("solution"));
-    }
-
-    #[test]
-    fn json_includes_pretty_when_provided() {
-        let obj = format_puzzle_json(
-            ".2.....89.5.7........1.34....4.6.....3.8...1...7...365..1.4.9.....9...3.9.2..1...",
-            25,
-            1.0,
-            24.27,
-            Some("+-------+...".to_string()),
-            None,
-        );
-
-        assert!(obj["pretty"].is_string());
-    }
-
-    #[test]
-    fn json_includes_solution_when_provided() {
-        let obj = format_puzzle_json(
-            ".2.....89.5.7........1.34....4.6.....3.8...1...7...365..1.4.9.....9...3.9.2..1...",
-            25,
-            1.0,
-            24.27,
-            None,
-            Some(
-                "652483917978162435314975628825736149791824563436519872269348751547291386183657294",
-            ),
-        );
-
-        assert!(obj["solution"].is_string());
-        assert_eq!(
-            obj["solution"].as_str().unwrap(),
-            "652483917978162435314975628825736149791824563436519872269348751547291386183657294"
-        );
-    }
-
-    #[test]
-    fn json_field_types_are_correct() {
-        let obj = format_puzzle_json("123456789", 9, 2.5, 10.123, None, None);
-
-        assert!(obj["puzzle"].is_string());
-        assert!(obj["num_clues"].is_number());
-        assert!(obj["geo_mean_guesses"].is_number());
-        assert!(obj["loss"].is_number());
-    }
-
-    #[test]
-    fn json_values_are_preserved() {
-        let puzzle = ".23......5...";
-        let obj = format_puzzle_json(puzzle, 5, 3.14159, 12.3456, None, None);
-
-        assert_eq!(obj["puzzle"].as_str().unwrap(), puzzle);
-        assert_eq!(obj["num_clues"].as_u64().unwrap(), 5);
-    }
-
-    #[test]
-    fn json_rounds_geo_mean_guesses_to_1_decimal() {
-        let obj = format_puzzle_json("...", 0, 3.14159, 0.0, None, None);
-        // 3.14159 * 10 = 31.4159, round = 31, /10 = 3.1
-        assert_eq!(obj["geo_mean_guesses"].as_f64().unwrap(), 3.1);
-    }
-
-    #[test]
-    fn json_rounds_loss_to_2_decimals() {
-        let obj = format_puzzle_json("...", 0, 0.0, 12.3456, None, None);
-        // 12.3456 * 100 = 1234.56, round = 1235, /100 = 12.35
-        assert_eq!(obj["loss"].as_f64().unwrap(), 12.35);
-    }
-
-    #[test]
-    fn json_output_is_valid_json_line() {
-        let obj = format_puzzle_json(".2.....89.", 25, 1.0, 24.27, None, None);
-        let json_str = serde_json::to_string(&obj).unwrap();
-
-        // Should parse back successfully
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["puzzle"], obj["puzzle"]);
-        assert_eq!(parsed["num_clues"], obj["num_clues"]);
-    }
-
-    #[test]
-    fn json_with_solution_output_is_valid() {
-        let solution =
-            "652483917978162435314975628825736149791824563436519872269348751547291386183657294";
-        let obj = format_puzzle_json(".2.....89.", 25, 1.0, 24.27, None, Some(solution));
-        let json_str = serde_json::to_string(&obj).unwrap();
-
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["puzzle"], obj["puzzle"]);
-        assert_eq!(parsed["solution"], obj["solution"]);
-        assert_eq!(parsed["solution"].as_str().unwrap(), solution);
-        // Solution should be 81 chars, all digits 1-9
-        let sol_str = parsed["solution"].as_str().unwrap();
-        assert_eq!(sol_str.len(), 81);
-        assert!(sol_str.chars().all(|c| c.is_ascii_digit()));
-    }
-
-    // ------------------------------------------------------------------
-    // format_pretty
-    // ------------------------------------------------------------------
-    // --skip
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn default_skip_is_zero() {
-        let opts = Options::default();
-        assert_eq!(opts.skip, 0);
-    }
-
-    // ------------------------------------------------------------------
-    // empty pattern file
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn load_empty_file_leaves_pool_empty() {
-        let tmp = std::env::temp_dir().join("rdoku_test_empty_pattern.txt");
-        std::fs::write(&tmp, b"").expect("create temp file");
-        let path = tmp.to_str().unwrap();
-
-        // open_regular_file must reject a 0-byte file
-        let result = rdoku::util::open_regular_file(path);
-        let _ = std::fs::remove_file(&tmp);
-        assert!(result.is_err(), "expected error for 0-byte file");
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("empty"),
-            "error message should mention 'empty': {}",
-            msg
-        );
-    }
-
-    #[test]
-    fn generator_starts_with_printed_zero() {
-        let g = Generator::new(Options::default(), Arc::new(AtomicBool::new(true)));
-        assert_eq!(g.printed, 0);
-    }
-
-    #[test]
-    fn skip_with_one_puzzle_display_all_prints_nothing() {
-        // With display_all and skip=1, a single generated puzzle should
-        // not be printed but should increment the counter.
-        let opts = Options {
-            max_puzzles: 1,
-            skip: 1,
-            display_all: true,
-            num_puzzles_in_pool: 1,
-            clues_to_drop: 3,
-            do_minimize: true,
-            pencilmark: false,
-            ..Options::default()
-        };
-        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
-        g.init_empty();
-        g.generate();
-        // printed == 1 (counted but not shown), pool has 1 entry
-        assert_eq!(g.printed, 1);
-        assert_eq!(g.pool.len(), 1);
-    }
-
-    #[test]
-    fn skip_zero_with_one_puzzle_prints() {
-        let opts = Options {
-            max_puzzles: 1,
-            skip: 0,
-            display_all: true,
-            num_puzzles_in_pool: 1,
-            clues_to_drop: 3,
-            do_minimize: true,
-            pencilmark: false,
-            ..Options::default()
-        };
-        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
-        g.init_empty();
-        g.generate();
-        assert_eq!(g.printed, 1);
-        assert_eq!(g.pool.len(), 1);
-    }
-
-    #[test]
-    fn skip_without_display_all_counts_accepted_only() {
-        // Without display_all, only puzzles accepted into the pool count.
-        // With a fresh pool (all MAX), the first puzzle is always accepted.
-        let opts = Options {
-            max_puzzles: 1,
-            skip: 0,
-            display_all: false,
-            num_puzzles_in_pool: 1,
-            clues_to_drop: 3,
-            do_minimize: true,
-            pencilmark: false,
-            ..Options::default()
-        };
-        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
-        g.init_empty();
-        g.generate();
-        // The puzzle was accepted, so printed counter incremented
-        assert_eq!(g.printed, 1);
-    }
-
-    #[test]
-    fn skip_equal_to_limit_is_rejected() {
-        // Validation logic (extracted for testing)
-        fn validate(opts: &Options) -> Result<(), String> {
-            if opts.max_puzzles != u64::MAX && opts.skip >= opts.max_puzzles {
-                Err(format!(
-                    "Error: --skip ({}) must be less than -l ({}).",
-                    opts.skip, opts.max_puzzles
-                ))
+    let mut printed = 0u64;
+    let cb = |p: GeneratedPuzzle| -> bool {
+        let will_print = printed >= skip;
+        if will_print {
+            let solution = if need_solution {
+                let (_, sol, _) = rdoku::solve_sudoku(&p.puzzle, 1, 0);
+                Some(sol)
             } else {
-                Ok(())
-            }
+                None
+            };
+            print_puzzle(&p, pretty, json, pencilmark, solution.as_deref());
         }
+        printed += 1;
+        printed < max_puzzles
+    };
 
-        assert!(validate(&Options {
-            max_puzzles: 5,
-            skip: 5,
-            ..Options::default()
-        })
-        .is_err());
-
-        assert!(validate(&Options {
-            max_puzzles: 5,
-            skip: 6,
-            ..Options::default()
-        })
-        .is_err());
-    }
-
-    #[test]
-    fn skip_less_than_limit_is_accepted() {
-        fn validate(opts: &Options) -> Result<(), String> {
-            if opts.max_puzzles != u64::MAX && opts.skip >= opts.max_puzzles {
-                Err(format!(
-                    "Error: --skip ({}) must be less than -l ({}).",
-                    opts.skip, opts.max_puzzles
-                ))
-            } else {
-                Ok(())
-            }
-        }
-
-        assert!(validate(&Options {
-            max_puzzles: 5,
-            skip: 4,
-            ..Options::default()
-        })
-        .is_ok());
-
-        // No -l specified → unlimited, any skip is fine
-        assert!(validate(&Options {
-            max_puzzles: u64::MAX,
-            skip: 1000,
-            ..Options::default()
-        })
-        .is_ok());
-    }
-
-    #[test]
-    fn skip_with_solution_does_not_compute_for_skipped() {
-        // With skip=1, display_all=true, solution=true:
-        // the first (and only) puzzle is skipped, so solution is not computed.
-        // We verify by checking that printed increments but the generator
-        // doesn't crash (solving is skipped internally).
-        let opts = Options {
-            max_puzzles: 1,
-            skip: 1,
-            display_all: true,
-            solution: true,
-            num_puzzles_in_pool: 1,
-            clues_to_drop: 3,
-            do_minimize: true,
-            pencilmark: false,
-            ..Options::default()
-        };
-        let mut g = Generator::new(opts, Arc::new(AtomicBool::new(true)));
-        g.init_empty();
-        g.generate();
-        assert_eq!(g.printed, 1);
-        assert_eq!(g.pool.len(), 1);
-    }
-
-    // ------------------------------------------------------------------
-    // is_valid_puzzle
-    // ------------------------------------------------------------------
-
-    fn make_vanilla_generator() -> Generator {
-        Generator::new(
-            Options {
-                pencilmark: false,
-                ..Options::default()
-            },
-            Arc::new(AtomicBool::new(true)),
-        )
-    }
-
-    #[test]
-    fn valid_empty_puzzle() {
-        let g = make_vanilla_generator();
-        assert!(g.is_valid_puzzle(
-            b"................................................................................."
-        ));
-    }
-
-    #[test]
-    fn valid_partial_puzzle() {
-        let g = make_vanilla_generator();
-        // A valid partially-filled puzzle (no duplicates per row/col/box)
-        let puzzle =
-            b"53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79";
-        assert!(g.is_valid_puzzle(puzzle));
-    }
-
-    #[test]
-    fn invalid_duplicate_in_row() {
-        let g = make_vanilla_generator();
-        // Two 1's in the first row at positions 0 and 2
-        let puzzle =
-            b"1.11111..........................................................................";
-        assert!(!g.is_valid_puzzle(puzzle));
-    }
-
-    #[test]
-    fn invalid_duplicate_in_column() {
-        let g = make_vanilla_generator();
-        // Two 1's in column 0 (cells 0 and 9)
-        let puzzle =
-            b"1........1.......................................................................";
-        assert!(!g.is_valid_puzzle(puzzle));
-    }
-
-    #[test]
-    fn invalid_duplicate_in_box() {
-        let g = make_vanilla_generator();
-        // Two 1's in box 0: cell 0 and cell 10 (row 1, col 1)
-        let puzzle =
-            b"1.........1......................................................................";
-        assert!(!g.is_valid_puzzle(puzzle));
-    }
-
-    #[test]
-    fn valid_complete_solution() {
-        let g = make_vanilla_generator();
-        let puzzle =
-            b"534678912672195348198342567859761423426853791713924856961537284287419635345286179";
-        assert!(g.is_valid_puzzle(puzzle));
-    }
-
-    #[test]
-    fn invalid_duplicate_in_row_8() {
-        let g = make_vanilla_generator();
-        // Two 9's at the end of row 8 (cells 79 and 80)
-        let mut puzzle = [b'.'; 81];
-        puzzle[79] = b'9';
-        puzzle[80] = b'9';
-        assert!(!g.is_valid_puzzle(&puzzle));
-    }
-
-    // ------------------------------------------------------------------
-    // generate() loop termination — regression test for the bug where the
-    // outer loop ran max_puzzles *iterations* instead of running until
-    // max_puzzles puzzles were *printed*.  With a seed-file pool (entries
-    // have finite loss rather than f64::MAX), the first iteration could be
-    // discarded (duplicate check, constrain failure, or loss > worst_loss),
-    // leaving printed == 0 even with -l 1.
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn limit_one_with_seeded_pool_produces_exactly_one_puzzle() {
-        let mut g = Generator::new(
-            Options {
-                max_puzzles: 1,
-                skip: 0,
-                display_all: false,
-                num_puzzles_in_pool: 5,
-                clues_to_drop: 1,
-                do_minimize: false,
-                pencilmark: false,
-                num_evals: 1,
-                clue_weight: 3.0,
-                guess_weight: 0.0,
-                random_weight: 1.0,
-                ..Options::default()
-            },
-            Arc::new(AtomicBool::new(true)),
-        );
-        let seed =
-            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
-        // Simulate what load() does: evaluate the seed and push it into the pool.
-        let (_, _, loss) = g.evaluate(seed.as_bytes());
-        g.pool.push(PoolEntry {
-            loss,
-            puzzle: seed.to_string(),
-        });
-        g.pool_set.insert(seed.to_string());
-
-        g.generate();
-
-        assert_eq!(
-            g.printed, 1,
-            "generate() should print exactly 1 puzzle when -l 1 is given, \
-             even when the pool is seeded with finite-loss entries"
-        );
-    }
-
-    #[test]
-    fn limit_three_with_seeded_pool_produces_exactly_three_puzzles() {
-        let mut g = Generator::new(
-            Options {
-                max_puzzles: 3,
-                skip: 0,
-                display_all: false,
-                num_puzzles_in_pool: 5,
-                clues_to_drop: 1,
-                do_minimize: false,
-                pencilmark: false,
-                num_evals: 1,
-                clue_weight: 3.0,
-                guess_weight: 0.0,
-                random_weight: 1.0,
-                ..Options::default()
-            },
-            Arc::new(AtomicBool::new(true)),
-        );
-        let seed =
-            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
-        let (_, _, loss) = g.evaluate(seed.as_bytes());
-        g.pool.push(PoolEntry {
-            loss,
-            puzzle: seed.to_string(),
-        });
-        g.pool_set.insert(seed.to_string());
-
-        g.generate();
-
-        assert_eq!(g.printed, 3);
-    }
-
-    // ------------------------------------------------------------------
-    // Signal handling (graceful shutdown on Ctrl-C)
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn generate_stops_when_running_flag_is_false() {
-        let mut g = Generator::new(
-            Options {
-                max_puzzles: 100, // Request many puzzles
-                skip: 0,
-                display_all: false,
-                num_puzzles_in_pool: 1,
-                clues_to_drop: 1,
-                do_minimize: false,
-                pencilmark: false,
-                num_evals: 1,
-                clue_weight: 3.0,
-                guess_weight: 0.0,
-                random_weight: 1.0,
-                ..Options::default()
-            },
-            Arc::new(AtomicBool::new(true)),
-        );
-
-        let seed =
-            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
-        let (_, _, loss) = g.evaluate(seed.as_bytes());
-        g.pool.push(PoolEntry {
-            loss,
-            puzzle: seed.to_string(),
-        });
-        g.pool_set.insert(seed.to_string());
-
-        // Immediately stop the generator by setting running to false
-        g.running.store(false, Ordering::SeqCst);
-
-        g.generate();
-
-        // Should produce 0 puzzles since we set running=false before generate()
-        assert_eq!(
-            g.printed, 0,
-            "generate() should stop immediately when running flag is false"
-        );
-    }
-
-    #[test]
-    fn generate_produces_partial_output_before_shutdown() {
-        let mut g = Generator::new(
-            Options {
-                max_puzzles: 10,
-                skip: 0,
-                display_all: false,
-                num_puzzles_in_pool: 1,
-                clues_to_drop: 1,
-                do_minimize: false,
-                pencilmark: false,
-                num_evals: 1,
-                clue_weight: 3.0,
-                guess_weight: 0.0,
-                random_weight: 1.0,
-                ..Options::default()
-            },
-            Arc::new(AtomicBool::new(true)),
-        );
-
-        let seed =
-            ".2.4.6.3.4...591..3...2..5.214....9....8......97..4......6....8....7....9....13..";
-        let (_, _, loss) = g.evaluate(seed.as_bytes());
-        g.pool.push(PoolEntry {
-            loss,
-            puzzle: seed.to_string(),
-        });
-        g.pool_set.insert(seed.to_string());
-
-        // Simulate early shutdown by setting running=false
-        g.running.store(false, Ordering::SeqCst);
-        let printed_before_generate = g.printed;
-
-        g.generate();
-
-        // With running=false at the start, should produce 0 additional puzzles
-        assert_eq!(
-            g.printed, printed_before_generate,
-            "generate() should respect running flag check on each iteration"
-        );
+    if display_all {
+        generator.run_all(cb);
+    } else {
+        generator.run_accepted(cb);
     }
 }

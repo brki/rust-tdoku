@@ -12,7 +12,9 @@
 //! - [`solver_dpll_triad_simd`] — DPLL with triads, SIMD constraint propagation (fastest)
 
 pub mod bitutil;
+pub mod generator;
 pub mod grid_lib;
+pub mod pg_protocol;
 pub mod simd_vectors;
 pub mod solver_basic;
 pub mod solver_dpll_triad_scc;

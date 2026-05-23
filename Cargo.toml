@@ -27,9 +27,18 @@ path = "src/bin/generate.rs"
 name = "debug_solver"
 path = "src/bin/debug_solver.rs"
 
+[[bin]]
+name = "persistent_generator"
+path = "src/bin/persistent_generator.rs"
+
+[[bin]]
+name = "pg_client"
+path = "src/bin/pg_client.rs"
+
 [dependencies]
 wide = "1"
 rand = "0.10"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ctrlc = { version = "3", features = ["termination"] }
 

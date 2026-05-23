@@ -463,3 +463,13 @@ all-tests fuzz-timeout="30" generated-count="1000" verbose="":
     just comparison {{verbose}}
     just generated {{generated-count}} {{verbose}}
     echo -e "\033[0;32m==> All checks run\033[0m"
+
+# ── persistent generator pool ─────────────────────────────────────────────────
+
+# Start the persistent generator controller (uses pg_config.example.json).
+pg-start config="pg_config.example.json" socket="/tmp/rdoku-pg.sock":
+    cargo run --release --bin persistent_generator -- --config {{config}} --socket {{socket}}
+
+# Request a puzzle from the running persistent generator pool.
+pg-client profile="default" count="1" socket="/tmp/rdoku-pg.sock":
+    cargo run --release --bin pg_client -- --profile {{profile}} -l {{count}} --socket {{socket}}
